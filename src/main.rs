@@ -42,6 +42,11 @@ struct State {
     last_moved: Vec<TrashRecord>,
 }
 
+struct BusyReset(Arc<AtomicBool>);
+impl Drop for BusyReset {
+    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+}
+
 #[derive(Serialize)]
 struct RunningApp { pid: i32, name: String, bundle_id: String, is_active: bool }
 
@@ -152,7 +157,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
 
 fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>) {
     let command = request["cmd"].as_str().unwrap_or("");
-    if busy.load(Ordering::SeqCst) && !["ready","cancel","session_get","scan_page","volumes","history","ignore_get","schedule_get","guardian_get","ai_get","rules_get"].contains(&command) {
+    if busy.load(Ordering::SeqCst) && !allowed_while_files_are_processing(command) {
         message(&proxy, "正在处理文件，请等待完成后再操作。", true); return;
     }
     match command {
@@ -167,11 +172,11 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
         "space_cleanup_plan" => {let cache=state.lock().unwrap().space_cache.clone();let chosen=ids(&request);let (candidates,root)={let c=cache.lock().unwrap();let selection=if request["selection"].is_object(){Some((request["selection"]["query"].as_str().unwrap_or(""),request["selection"]["show_hidden"].as_bool().unwrap_or(false)))}else{None};let entries=match c.cleanup_candidates(&chosen,selection){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};(entries,c.root.clone())};thread::spawn(move||match cleanup::build_plan(candidates,root){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)});},
         "cleanup_plan_page" => {match cleanup::page_plan(request["plan_id"].as_str().unwrap_or(""),request["page"].as_u64().unwrap_or(0)as usize){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},
         "cleanup_analyze" => {let id=request["plan_id"].as_str().unwrap_or("").to_owned();thread::spawn(move||match cleanup::analyze_plan(&id){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)});},
-        "cleanup_apply" => {let entries=match cleanup::approved_entries(request["plan_id"].as_str().unwrap_or(""),&ids(&request),request["all"].as_bool().unwrap_or(false)){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"此计划没有可处理的明确候选。",true);return}if !(request["api_confirmed"]==true||confirm("将空间分析中所选文件移入废纸篓？",&format!("共 {} 个普通文件。目录只展开已索引文件，保护项已排除；每项仍会重新验证身份和占用。可用撤销恢复最近一批。",entries.len()))){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let mut allowed=state.lock().unwrap().allowed.clone();for e in &entries{if let Some(p)=Path::new(&e.path).parent(){if !allowed.iter().any(|r|p.starts_with(r)){allowed.push(p.to_path_buf());}}}let report=TrashService::new(allowed.clone(),journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}for p in allowed{if !d.allowed.contains(&p){d.allowed.push(p)}}let _=schedule::atomic_json(&saved_roots(),&d.allowed);d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}busy.store(false,Ordering::SeqCst);emit(&proxy,json!({"event":"moved","module":"space","paths":paths,"count":report.records.len(),"size":report.records.iter().map(|r|r.size).sum::<u64>(),"errors":report.failures,"undo_available":!report.records.is_empty()}));ready(&proxy);});},
-        "undo_last" => {let batch=state.lock().unwrap().last_moved.clone();if batch.is_empty(){message(&proxy,"本次启动尚无可撤销的清理批次；之前的操作请在历史中恢复。",true);return}let history=service(&state).history();let chosen:Vec<_>=batch.into_iter().filter(|r|history.iter().any(|h|h.id==r.id&&!h.restored)).collect();if chosen.is_empty(){message(&proxy,"最近一批已经恢复或记录已变化。",true);return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let mut allowed=state.lock().unwrap().allowed.clone();for r in &chosen{if let Some(p)=Path::new(&r.original_path).parent(){allowed.push(p.to_path_buf())}}let errors=TrashService::new(allowed,journal()).restore(&chosen);let now=service(&state).history();let restored_paths:Vec<_>=chosen.iter().filter(|r|now.iter().any(|h|h.id==r.id&&h.restored)).map(|r|r.original_path.clone()).collect();restore_views(&state,&restored_paths);{let mut d=state.lock().unwrap();d.last_moved.retain(|r|now.iter().any(|h|h.id==r.id&&!h.restored));}busy.store(false,Ordering::SeqCst);emit(&proxy,json!({"event":"undo","restored":chosen.iter().filter(|r|now.iter().any(|h|h.id==r.id&&h.restored)).count(),"errors":errors}));records(&state,&proxy);ready(&proxy);});},
+        "cleanup_apply" => {let entries=match cleanup::approved_entries(request["plan_id"].as_str().unwrap_or(""),&ids(&request),request["all"].as_bool().unwrap_or(false)){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"此计划没有可处理的明确候选。",true);return}if !(request["api_confirmed"]==true||confirm("将空间分析中所选文件移入废纸篓？",&format!("共 {} 个普通文件。目录只展开已索引文件，保护项已排除；每项仍会重新验证身份和占用。可用撤销恢复最近一批。",entries.len()))){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();for e in &entries{if let Some(p)=Path::new(&e.path).parent(){if !allowed.iter().any(|r|p.starts_with(r)){allowed.push(p.to_path_buf());}}}let report=TrashService::new(allowed.clone(),journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}for p in allowed{if !d.allowed.contains(&p){d.allowed.push(p)}}let _=schedule::atomic_json(&saved_roots(),&d.allowed);d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}drop(_busy_reset);emit(&proxy,json!({"event":"moved","module":"space","paths":paths,"count":report.records.len(),"size":report.records.iter().map(|r|r.size).sum::<u64>(),"errors":report.failures,"undo_available":!report.records.is_empty()}));ready(&proxy);});},
+        "undo_last" => {let batch=state.lock().unwrap().last_moved.clone();if batch.is_empty(){message(&proxy,"本次启动尚无可撤销的清理批次；之前的操作请在历史中恢复。",true);return}let history=service(&state).history();let chosen:Vec<_>=batch.into_iter().filter(|r|history.iter().any(|h|h.id==r.id&&!h.restored)).collect();if chosen.is_empty(){message(&proxy,"最近一批已经恢复或记录已变化。",true);return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();for r in &chosen{if let Some(p)=Path::new(&r.original_path).parent(){allowed.push(p.to_path_buf())}}let errors=TrashService::new(allowed,journal()).restore(&chosen);let now=service(&state).history();let restored_paths:Vec<_>=chosen.iter().filter(|r|now.iter().any(|h|h.id==r.id&&h.restored)).map(|r|r.original_path.clone()).collect();restore_views(&state,&restored_paths);{let mut d=state.lock().unwrap();d.last_moved.retain(|r|now.iter().any(|h|h.id==r.id&&!h.restored));}drop(_busy_reset);emit(&proxy,json!({"event":"undo","restored":chosen.iter().filter(|r|now.iter().any(|h|h.id==r.id&&h.restored)).count(),"errors":errors}));records(&state,&proxy);ready(&proxy);});},
         "uninstall_plan" => {let entries={let d=state.lock().unwrap();if request["selection"].is_object(){d.sessions.selected("uninstall",request["selection"]["category"].as_str().unwrap_or("all"),request["selection"]["query"].as_str().unwrap_or(""))}else{let mut chosen=ids(&request);if let Some(id)=request["id"].as_str(){chosen.push(id.into())}chosen.iter().filter_map(|id|d.approved.get(id).cloned()).collect::<Vec<_>>()}};if entries.len()!=1{message(&proxy,"深度卸载请一次选择一个应用，便于逐项核对关联资料。",true);return}match uninstall::build_plan(&entries[0]){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},
         "uninstall_analyze" => {let id=request["plan_id"].as_str().unwrap_or("").to_owned();thread::spawn(move||match uninstall::analyze_plan(&id){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)});},
-        "uninstall_apply" => {let chosen=ids(&request);let entries=match uninstall::approved_entries(request["plan_id"].as_str().unwrap_or(""),&chosen){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"请明确选择计划中的项目。",true);return}if !(request["api_confirmed"]==true||confirm("移入废纸篓所选卸载项目？","关联资料可能包含登录状态和应用设置；只处理你勾选且已审阅的精确路径，移入废纸篓可恢复。")){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let mut allowed=state.lock().unwrap().allowed.clone();allowed.push(home().join("Library"));let report=TrashService::new(allowed,journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}busy.store(false,Ordering::SeqCst);emit(&proxy,json!({"event":"moved","paths":paths,"count":report.records.len(),"errors":report.failures}));ready(&proxy);});},
+        "uninstall_apply" => {let chosen=ids(&request);let entries=match uninstall::approved_entries(request["plan_id"].as_str().unwrap_or(""),&chosen){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"请明确选择计划中的项目。",true);return}if !(request["api_confirmed"]==true||confirm("移入废纸篓所选卸载项目？","关联资料可能包含登录状态和应用设置；只处理你勾选且已审阅的精确路径，移入废纸篓可恢复。")){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();allowed.push(home().join("Library"));let report=TrashService::new(allowed,journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}drop(_busy_reset);emit(&proxy,json!({"event":"moved","paths":paths,"count":report.records.len(),"errors":report.failures}));ready(&proxy);});},
         "startup_get" => emit(&proxy,startup::list()),
         "startup_set" => {let selected=ids(&request);let enabled=request["enabled"].as_bool().unwrap_or(false);if request["api_confirmed"]==true||confirm("更改所选登录项？","只更改可管理的当前用户登录项，不删除配置文件。确认后生效。") {emit(&proxy,startup::set(&selected,enabled));}},
 
@@ -288,6 +293,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
 
             busy.store(true, Ordering::SeqCst);
             thread::spawn(move || {
+                let _busy_reset = BusyReset(busy.clone());
                 let result = service(&state).move_entries(&entries);
                 let paths: Vec<_> = result.records.iter().map(|r| r.original_path.clone()).collect();
                 let size: u64 = result.records.iter().map(|r| r.size).sum();
@@ -296,7 +302,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                     if !result.records.is_empty(){data.last_moved=result.records.clone();}
                     data.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));data.sessions.remove_paths(&paths);data.space_cache.lock().unwrap().remove_paths(&paths);let _=data.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));
                 }
-                busy.store(false, Ordering::SeqCst);
+                drop(_busy_reset);
                 emit(&proxy, json!({"event":"moved","paths":paths,"count":result.records.len(),"size":size,"errors":result.failures}));
                 ready(&proxy);
             });
@@ -310,6 +316,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             if purge && !confirm("永久清理这些文件？", &format!("将永久删除本应用记录的 {} 项。此操作不可撤销，不会清空废纸篓中的其他内容。", chosen.len())) { return; }
             busy.store(true, Ordering::SeqCst);
             thread::spawn(move || {
+                let _busy_reset = BusyReset(busy.clone());
                 let before = disk()["available"].as_u64().unwrap_or(0);
                 let errors = if purge { service(&state).purge(&chosen) } else {
                     let mut allowed=state.lock().unwrap().allowed.clone();
@@ -318,12 +325,12 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                     TrashService::new(allowed,journal()).restore(&chosen)
                 };
                 if !purge {let now=service(&state).history();let restored_paths:Vec<_>=chosen.iter().filter(|r|now.iter().any(|h|h.id==r.id&&h.restored)).map(|r|r.original_path.clone()).collect();restore_views(&state,&restored_paths);}
-                busy.store(false, Ordering::SeqCst);
                 let after = disk()["available"].as_u64().unwrap_or(0);
                 let mut text = if errors.is_empty() {
                     if purge { "已永久清理选定项目。".to_owned() } else { "已恢复到原位置。".to_owned() }
                 } else { format!("部分操作未完成：\n{}", errors.iter().take(8).cloned().collect::<Vec<_>>().join("\n")) };
                 if purge { text.push_str(&format!("\n系统可用空间变化：{:.1} MB。系统读数可能延后更新，并受其他程序活动影响。", after.saturating_sub(before) as f64 / 1_000_000.0)); }
+                drop(_busy_reset);
                 message(&proxy, text, !errors.is_empty()); records(&state, &proxy); ready(&proxy);
             });
         },
@@ -353,6 +360,47 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             }
         },
         _ => {},
+    }
+}
+
+/// 磁盘写入期间仍保持界面可读、可导航。只有会启动新扫描或改变文件/系统状态的请求等待当前批次。
+fn allowed_while_files_are_processing(command: &str) -> bool {
+    matches!(command,
+        "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
+        "ignore_get" | "schedule_get" | "guardian_get" | "ai_get" | "rules_get" |
+        "optimize" | "startup_get" | "login_settings" | "reveal" | "ai_chat" |
+        "ai_analyze" | "ai_models" | "uninstall_plan" | "uninstall_analyze" |
+        "cleanup_plan_page" | "cleanup_analyze" | "space_browse" | "space_cleanup_plan")
+}
+
+#[cfg(test)]
+mod busy_gate_tests {
+    use super::{allowed_while_files_are_processing, BusyReset};
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+
+    #[test]
+    fn file_processing_keeps_read_only_pages_available() {
+        for command in ["optimize", "startup_get", "session_get", "space_browse", "history", "ai_analyze"] {
+            assert!(allowed_while_files_are_processing(command), "{command} must remain available");
+        }
+    }
+
+    #[test]
+    fn file_processing_still_blocks_new_mutating_operations() {
+        for command in ["move", "cleanup_apply", "uninstall_apply", "purge", "startup_set", "scan"] {
+            assert!(!allowed_while_files_are_processing(command), "{command} must wait");
+        }
+    }
+
+    #[test]
+    fn panicking_file_worker_releases_the_busy_gate() {
+        let busy = Arc::new(AtomicBool::new(true));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+            let busy = busy.clone();
+            move || { let _reset = BusyReset(busy); panic!("fixture worker failure"); }
+        }));
+        assert!(result.is_err());
+        assert!(!busy.load(Ordering::SeqCst));
     }
 }
 

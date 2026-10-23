@@ -93,6 +93,18 @@ impl TrashService {
             return report;
         }
 
+        // 先逐项核验，再一次性持久化整批恢复意图。旧实现每移动一个文件就
+        // 读写并 fsync 整份历史；大批量时会退化为 O(n²) 的磁盘写入。
+        // 所有意图先落盘后才移动，进程中断仍可按 inode/device 从废纸篓找回。
+        let mut journal = match self.read_journal() {
+            Ok(value) => value,
+            Err(error) => {
+                report.failures.push(format!("历史记录不可读，未移动文件：{error}"));
+                return report;
+            }
+        };
+        let mut prepared = Vec::with_capacity(entries.len());
+        let mut intents = Vec::with_capacity(entries.len());
         for entry in entries {
             let source = PathBuf::from(&entry.path);
             let snapshot = match self.validate_entry(entry, &source) {
@@ -116,29 +128,25 @@ impl TrashService {
                 mtime_nsec: entry.mtime_nsec,
                 date: now,
             };
-
-            let mut journal = match self.read_journal() {
-                Ok(value) => value,
-                Err(error) => {
-                    report.failures.push(format!("历史记录不可读，未移动 {}：{}", entry.path, error));
-                    continue;
-                }
-            };
-            journal.intents.push(intent.clone());
+            intents.push(intent.clone());
+            prepared.push((entry, source, snapshot, intent));
+        }
+        if !intents.is_empty() {
+            journal.intents.extend(intents);
             if let Err(error) = self.write_journal(&journal) {
-                report.failures.push(format!("无法先写入恢复意图，未移动 {}：{}", entry.path, error));
-                continue;
+                report.failures.push(format!("无法先写入整批恢复意图，未移动文件：{error}"));
+                return report;
             }
+        }
 
+        for (entry, source, snapshot, intent) in prepared {
             // journal I/O 期间文件可能发生变化，因此移动前再比对扫描身份。
             if let Err(error) = self.validate_entry(entry, &source) {
-                journal.intents.retain(|item| item.id != id);
-                let cleanup = self.write_journal(&journal);
+                journal.intents.retain(|item| item.id != intent.id);
                 report.failures.push(format!(
-                    "意图日志写入期间文件变化，已拒绝移动 {}：{}{}",
+                    "意图日志写入期间文件变化，已拒绝移动 {}：{}",
                     entry.path,
-                    error,
-                    cleanup.err().map(|e| format!("；清理意图日志失败：{e}")).unwrap_or_default()
+                    error
                 ));
                 continue;
             }
@@ -163,8 +171,8 @@ impl TrashService {
             }
 
             let record = TrashRecord {
-                id: id.clone(),
-                date: now,
+                id: intent.id.clone(),
+                date: intent.date,
                 original_path: source.to_string_lossy().into_owned(),
                 trash_path: moved_path.to_string_lossy().into_owned(),
                 size: entry.size,
@@ -174,14 +182,13 @@ impl TrashService {
             };
             journal.records.retain(|old| old.id != record.id);
             journal.records.push(record.clone());
-            journal.intents.retain(|item| item.id != id);
-            match self.write_journal(&journal) {
-                Ok(()) => report.records.push(record),
-                Err(error) => report.failures.push(format!(
-                    "{} 已移入废纸篓，但完整历史记录写入失败；恢复意图仍在磁盘上，无法保证可恢复：{}",
-                    entry.path, error
-                )),
-            }
+            journal.intents.retain(|item| item.id != intent.id);
+            report.records.push(record);
+        }
+        if let Err(error) = self.write_journal(&journal) {
+            report.failures.push(format!(
+                "文件已处理，但批次历史更新失败；移动前保存的恢复意图仍保留，重新打开历史可尝试找回：{error}"
+            ));
         }
         report
     }
@@ -190,7 +197,11 @@ impl TrashService {
     pub fn history(&self) -> Vec<TrashRecord> {
         let _guard = self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // history 也会回收未完成意图，必须与后台任务互斥。
-        let Ok(_process_lock) = self.process_lock() else { return Vec::new(); };
+        // 后台正在处理时读回最近一次原子保存的快照；不尝试修复意图，也不假报空历史。
+        let _process_lock = match self.process_lock() {
+            Ok(lock) => lock,
+            Err(_) => return self.read_journal().map(|journal| journal.records).unwrap_or_default(),
+        };
         let mut journal = match self.read_journal() {
             Ok(value) => value,
             Err(_) => return Vec::new(),
@@ -199,6 +210,16 @@ impl TrashService {
         let mut changed = false;
         for intent in pending {
             let original = PathBuf::from(&intent.original_path);
+            // 批次预写后尚未移动的项目仍在原处，移除无用意图，避免下次查历史时
+            // 对每个未处理项目都遍历系统废纸篓。
+            if fs::symlink_metadata(&original).is_ok_and(|metadata| {
+                let current = snapshot_from_metadata(&metadata);
+                current.inode == intent.inode && current.device == intent.device
+            }) {
+                journal.intents.retain(|old| old.id != intent.id);
+                changed = true;
+                continue;
+            }
             if let Some(found) = self.find_in_trash(&original, intent.inode, intent.device) {
                 let record = TrashRecord {
                     id: intent.id.clone(),
@@ -683,6 +704,26 @@ mod safety_tests {
         fs::write(&path,b"after-size-change").unwrap();
         assert!(service.validate_entry(&entry,&path).is_err());
         assert_eq!(fs::read(&path).unwrap(),b"after-size-change");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batch_move_persists_and_restores_every_fixture_item() {
+        let root = fixture();
+        let files: Vec<_> = (0..8).map(|n| {
+            let path = root.join(format!("batch-{n}.txt"));
+            fs::write(&path, format!("fixture {n}")).unwrap();
+            crate::engine::make_entry(&path, "file", &root, "批量恢复测试").unwrap()
+        }).collect();
+        let service = TrashService::new(vec![root.clone()], root.join("history.json"));
+        let moved = service.move_entries(&files);
+        assert_eq!(moved.records.len(), files.len(), "{:?}", moved.failures);
+        assert!(moved.failures.is_empty(), "{:?}", moved.failures);
+        assert_eq!(service.history().iter().filter(|r| !r.restored).count(), files.len());
+        assert!(service.restore(&moved.records).is_empty());
+        for entry in &files {
+            assert_eq!(fs::read_to_string(&entry.path).unwrap(), format!("fixture {}", entry.name.trim_start_matches("batch-").trim_end_matches(".txt")));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
