@@ -1,0 +1,22 @@
+[package]
+name = "karuo-cleaner"
+version = "1.4.0"
+edition = "2021"
+
+[dependencies]
+wry = "=0.55.1"
+tao = "=0.35.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+walkdir = "=2.5.0"
+plist = "=1.10.1"
+rfd = { version = "=0.16.0", default-features = false }
+libc = "=0.2.189"
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSFileManager", "NSURL", "NSString", "NSError", "NSArray"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSRunningApplication", "NSWorkspace", "NSAlert", "NSButton", "NSControl", "NSResponder", "NSView", "libc"] }
+
+[profile.release]
+opt-level = "s"
+strip = true
+lto = "thin"

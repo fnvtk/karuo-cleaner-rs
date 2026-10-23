@@ -1,0 +1,19 @@
+/target/
+/dist/
+/build/
+*.log
+.DS_Store
+.env
+.env.*
+*ai-config.json
+*history-rust.json
+*scan-sessions.json
+*selected-roots.json
+*.sock
+# 本机与第三方静态分析原始证据保留本地，不随源码分发
+/开发文档/REA*.json
+/开发文档/REA*.txt
+/开发文档/设计验收/
+/开发文档/*验收.json
+/开发文档/网站*
+/Tests/界面验收/
