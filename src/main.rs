@@ -363,14 +363,16 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
     }
 }
 
-/// 磁盘写入期间仍保持界面可读、可导航。只有会启动新扫描或改变文件/系统状态的请求等待当前批次。
+/// 磁盘写入期间仍保持界面可读、可导航。文件清理/扫描等待；本机设置和启动项调整可继续使用。
 fn allowed_while_files_are_processing(command: &str) -> bool {
     matches!(command,
         "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
         "ignore_get" | "schedule_get" | "guardian_get" | "ai_get" | "rules_get" |
         "optimize" | "startup_get" | "login_settings" | "reveal" | "ai_chat" |
         "ai_analyze" | "ai_models" | "uninstall_plan" | "uninstall_analyze" |
-        "cleanup_plan_page" | "cleanup_analyze" | "space_browse" | "space_cleanup_plan")
+        "cleanup_plan_page" | "cleanup_analyze" | "space_browse" | "space_cleanup_plan" |
+        "ai_save" | "schedule_save" | "guardian_save" | "ignore_add" | "ignore_remove" |
+        "startup_set" | "root_set" | "ai_proposal_plan")
 }
 
 #[cfg(test)]
@@ -380,14 +382,14 @@ mod busy_gate_tests {
 
     #[test]
     fn file_processing_keeps_read_only_pages_available() {
-        for command in ["optimize", "startup_get", "session_get", "space_browse", "history", "ai_analyze"] {
+        for command in ["optimize", "startup_get", "startup_set", "session_get", "space_browse", "history", "ai_analyze", "ai_save", "guardian_save"] {
             assert!(allowed_while_files_are_processing(command), "{command} must remain available");
         }
     }
 
     #[test]
     fn file_processing_still_blocks_new_mutating_operations() {
-        for command in ["move", "cleanup_apply", "uninstall_apply", "purge", "startup_set", "scan"] {
+        for command in ["move", "cleanup_apply", "uninstall_apply", "purge", "restore", "undo_last", "scan", "space_start"] {
             assert!(!allowed_while_files_are_processing(command), "{command} must wait");
         }
     }
