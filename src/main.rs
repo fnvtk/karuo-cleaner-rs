@@ -5,6 +5,7 @@ mod selftest;
 mod space;
 mod safety;
 mod schedule;
+mod guardian;
 mod sessions;
 mod analysis;
 mod startup;
@@ -151,7 +152,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
 
 fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>) {
     let command = request["cmd"].as_str().unwrap_or("");
-    if busy.load(Ordering::SeqCst) && !["ready","cancel","session_get","scan_page","volumes","history","ignore_get","schedule_get","ai_get","rules_get"].contains(&command) {
+    if busy.load(Ordering::SeqCst) && !["ready","cancel","session_get","scan_page","volumes","history","ignore_get","schedule_get","guardian_get","ai_get","rules_get"].contains(&command) {
         message(&proxy, "正在处理文件，请等待完成后再操作。", true); return;
     }
     match command {
@@ -193,6 +194,8 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             }
             match safety::load_ignored_paths(){Ok(p)=>emit(&proxy,json!({"event":"ignore","paths":p,"error":error})),Err(e)=>emit(&proxy,json!({"event":"ignore","error":e}))}
         },
+        "guardian_get" => {thread::spawn(move||emit(&proxy,guardian::status(None)));},
+        "guardian_save" => {let result=serde_json::from_value::<guardian::Preferences>(request["preferences"].clone()).map_err(|_|"习惯设置格式无效".to_string()).and_then(guardian::save);emit(&proxy,guardian::status(result.err()));},
         "schedule_get" => {thread::spawn(move ||emit(&proxy,schedule::status(None)));},
         "schedule_save" => {
             let mut raw=request.clone();raw.as_object_mut().map(|m|m.remove("cmd"));
@@ -358,6 +361,7 @@ fn main() -> wry::Result<()> {
     if args.get(1).is_some_and(|v|v=="--api"){use std::io::Read;let raw=if args.get(2).is_some_and(|v|v=="-"){let mut b=String::new();std::io::stdin().read_to_string(&mut b).unwrap();b}else{args.get(2).cloned().unwrap_or_else(||"{}".into())};match serde_json::from_str::<Value>(&raw).map_err(|e|e.to_string()).and_then(|r|control::client(&r)){Ok(v)=>println!("{v}"),Err(e)=>{eprintln!("{e}");std::process::exit(1)}}return Ok(());}
 
     if args.get(1).is_some_and(|v|v=="--scheduled-run") {match schedule::run(){Ok(report)=>println!("{report}"),Err(e)=>{eprintln!("定时任务未执行：{e}");std::process::exit(1)}}return Ok(())}
+    if args.get(1).is_some_and(|v|v=="--guardian-check"){println!("{}",guardian::status(None));return Ok(())}
     if args.get(1).is_some_and(|v|v=="--schedule-check") {println!("{}",schedule::status(None));return Ok(())}
 
     if args.get(1).is_some_and(|v|v=="--space-bench") {

@@ -91,12 +91,16 @@ pub fn run()->Result<Value,String> {
     let started=Instant::now();let result=engine::scan_junk(&AtomicBool::new(false),|_|{});
     let mut report=json!({"at":now(),"mode":c.mode,"status":"scanned","scanned":result.scanned,"candidates":result.entries.len(),"moved":0,"bytes":0,"errors":[],"notes":result.notes,"truncated":result.truncated});
     if c.mode=="trash" {
+        let (preferences,recovered)=match crate::guardian::load().and_then(|p|crate::guardian::recovered().map(|r|(p,r))){Ok(v)=>v,Err(e)=>{report["status"]=json!("paused");report["errors"]=json!([e]);atomic_json(&report_path(),&report)?;return Ok(report)}};
+        report["preferences"]=json!(preferences);
+        report["recovered_avoided"]=json!(recovered.len());
         let mut errors=vec![];let mut moved=0;let mut bytes=0u64;
         match build_active(){Ok(false)=>{
             let service=TrashService::new(vec![home().join("Library/Caches"),home().join("Library/Logs")],support().join("history-rust.json"));
-            for e in result.entries.iter().filter(|e|automatic_candidate(e,now())).take(50){
+            for e in result.entries.iter().filter(|e|automatic_candidate(e,now()) && crate::guardian::allows(&preferences,e,now(),&recovered)).take(50){
                 if load().map_or(true,|current| !current.enabled || current.mode!="trash"){errors.push("设置已关闭或无法确认，本次停止处理".into());break}
                 if started.elapsed().as_secs()>60 || bytes.saturating_add(e.size)>128*1024*1024{errors.push("本次已到后台预算上限，其余项目保留".to_string());break}
+                match crate::guardian::load().and_then(|p|crate::guardian::recovered().map(|r|crate::guardian::allows(&p,e,now(),&r))){Ok(true)=>{},Ok(false)=>continue,Err(e)=>{errors.push(e);break}}
                 if let Err(error)=safety::validate_junk_entry(e){errors.push(error);continue}
                 let r=service.move_entries(std::slice::from_ref(e));moved+=r.records.len();bytes=bytes.saturating_add(r.records.iter().map(|x|x.size).sum::<u64>());errors.extend(r.failures);
             }

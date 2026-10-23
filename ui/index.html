@@ -92,7 +92,7 @@
           <button class="secondary-btn" id="ignore-open">保护名单</button>
           <button class="secondary-btn" id="schedule-open">定时清理</button>
           <button class="icon-button" id="history-open" aria-label="清理历史" title="清理历史"><span data-icon="history"></span></button>
-          <div class="profile"><span class="profile-dot">若</span><span>本机维护</span></div>
+          <button class="secondary-btn" id="guardian-open">清理管家</button>
         </div>
       </header>
       <section class="workspace" id="workspace">
@@ -187,6 +187,25 @@
         </form>
       </div>
       <div class="sheet-foot"><span class="schedule-status" id="schedule-installed"></span><div class="sheet-actions"><button class="secondary-btn" id="schedule-cancel">关闭</button><button class="primary-small" id="schedule-save" type="submit" form="schedule-form" disabled>保存设置</button></div></div>
+    </section>
+  </div>
+  <div class="overlay" id="guardian-overlay" role="dialog" aria-modal="true" aria-labelledby="guardian-title">
+    <section class="sheet">
+      <div class="sheet-head"><div><h2 id="guardian-title">清理管家</h2><p>按你的习惯照看空间，重要文件先留住。</p></div><button class="secondary-btn" id="guardian-close">关闭</button></div>
+      <div class="sheet-body">
+        <p id="guardian-binding">正在读取管家状态…</p>
+        <p id="guardian-summary" style="white-space:pre-line;margin:20px 0"></p>
+        <form id="guardian-form" class="schedule-form">
+          <label><input id="guardian-cache" type="checkbox"> 整理旧临时缓存</label>
+          <label>临时缓存至少保留几天 <input id="guardian-cache-days" type="number" min="14" max="3650" required value="30"></label>
+          <label><input id="guardian-logs" type="checkbox"> 整理旧运行记录</label>
+          <label>运行记录至少保留几天 <input id="guardian-log-days" type="number" min="90" max="3650" required value="90"></label>
+        </form>
+        <p style="margin:20px 0">你从清理历史中恢复过的文件，以后自动清理会避开。保护名单始终有效。只记住明确操作，不猜测你的意思。</p>
+        <p>这里的设置只会收紧清理范围。自动清理还需在「定时清理」里启用；不会删除个人文档、卸载应用或清空废纸篓。</p>
+        <p id="guardian-feedback" role="status" aria-live="polite"></p>
+      </div>
+      <div class="sheet-foot"><button class="secondary-btn" id="guardian-schedule">设置定时照看</button><button class="primary-small" id="guardian-save" form="guardian-form" type="submit" disabled>保存我的习惯</button></div>
     </section>
   </div>
   <div class="overlay" id="ignore-overlay" role="dialog" aria-modal="true" aria-labelledby="ignore-title" aria-describedby="ignore-description">
@@ -390,7 +409,16 @@
       function requestPage(){saveLocal();post('scan_page',{module:state.active,category:state.category,query:state.query,page:state.entryPage})}
       function requestSpacePage(){post('space_browse',{path:state.spacePath,request_id:state.spaceRequestId,page:state.spacePage,query:$('space-search').value,show_hidden:state.spaceShowHidden})}
       function paintResult(){const d=state.data||{},n=Number(d.filtered_total??d.total??state.entries.length),bytes=Number(d.total_bytes)||0;$('result-count').textContent=String(n);$('result-meta').textContent=`${Number(d.scanned)||0} 项已读取 · ${n} 个符合筛选 · ${fmtSize(bytes)}`;$('result-notes').textContent=Array.isArray(d.notes)?d.notes.join(' · '):'';$('scan-foot').textContent=`只读扫描；移入废纸篓前复查保护、身份和占用状态。跳过 ${Number(d.skipped)||0} 项。`;$('scan-button-label').textContent=state.scanning?'停止扫描':state.active==='optimize'?'读取应用':state.active==='space'?'扫描':d.done?'重新扫描':'开始扫描';$('scan-button').classList.toggle('running',state.scanning);setStatus(state.scanning?'正在扫描 · 切换页面会继续':d.done?'扫描已完成 · 结果已保留':'尚未扫描','');}
-      function receive(e){if(typeof e==='string'){try{e=JSON.parse(e)}catch{return}}if(!e)return;const type=e.type||e.event;
+      let guardianFocus=null;
+      function closeGuardian(){closeDialog('guardian-overlay');guardianFocus?.focus()}
+      $('guardian-open').onclick=()=>{guardianFocus=document.activeElement;$('guardian-overlay').classList.add('visible');$('guardian-save').disabled=true;post('guardian_get');$('guardian-close').focus()};
+      $('guardian-close').onclick=closeGuardian;
+      $('guardian-overlay').onclick=e=>{if(e.target===$('guardian-overlay'))closeGuardian()};
+      $('guardian-schedule').onclick=()=>{closeGuardian();openSchedule()};
+      $('guardian-form').onsubmit=e=>{e.preventDefault();$('guardian-save').disabled=true;$('guardian-feedback').textContent='正在保存…';post('guardian_save',{preferences:{cache_days:Number($('guardian-cache-days').value),log_days:Number($('guardian-log-days').value),clean_cache:$('guardian-cache').checked,clean_logs:$('guardian-logs').checked}})};
+      document.addEventListener('keydown',e=>{if(!$('guardian-overlay').classList.contains('visible'))return;if(e.key==='Escape'){e.preventDefault();closeGuardian()}if(e.key==='Tab'){const nodes=Array.from($('guardian-overlay').querySelectorAll('button:not(:disabled),input:not(:disabled)'));const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){last.focus();e.preventDefault()}else if(!e.shiftKey&&document.activeElement===last){first.focus();e.preventDefault()}}});
+      function showGuardian(e){const p=e.preferences;if(p){$('guardian-cache').checked=p.clean_cache;$('guardian-logs').checked=p.clean_logs;$('guardian-cache-days').value=p.cache_days;$('guardian-log-days').value=p.log_days}$('guardian-save').disabled=!p;$('guardian-binding').textContent=e.binding?.verified?'网站 Agent 已绑定':'网站 Agent 待绑定：当前网站凭证不能登记此工具。';const c=e.schedule?.config||{},r=e.schedule?.last_run;const enabled=c.enabled&&e.schedule?.installed;$('guardian-summary').textContent=`${enabled?(c.mode==='trash'?'定时保守清理已开启':'定时检查已开启'):'自动照看未开启'} · ${c.frequency==='daily'?'每天':'每周一'} ${String(c.hour??10).padStart(2,'0')}:${String(c.minute??0).padStart(2,'0')}\n已恢复并自动避让 ${Number(e.recovered_count)||0} 项${r?'\n最近一次：检查 '+(Number(r.scanned)||0)+' 项，移入废纸篓 '+(Number(r.moved)||0)+' 项':'\n还没有定时运行记录'}`;$('guardian-feedback').textContent=e.error||e.schedule?.error||'习惯已读取并保存在本机；保存习惯不会立即开始清理。'}
+      function receive(e){if(typeof e==='string'){try{e=JSON.parse(e)}catch{return}}if(!e)return;const type=e.type||e.event;if(type==='guardian'){showGuardian(e);return}
         if(type==='root'&&moduleInfo[e.module]&&typeof e.path==='string'){
           const m=e.module,fromPicker=state.pendingRoot===m;state.roots[m]=e.path;state.scopeByModule[m]={type:'path',path:e.path,name:e.path.split('/').filter(Boolean).pop()||e.path};
           if(fromPicker&&m===state.active){handle(e);return}if(m===state.active){renderVolumes();setStatus('扫描范围已更新；已有结果保留，重新扫描后生效','')}return;

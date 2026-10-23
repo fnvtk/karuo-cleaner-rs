@@ -179,3 +179,16 @@ API 可能先收到 `event:message`，这不是最终 `history`、`startup` 或�
 ```
 
 返回后仍需session_get/history和文件状态回读，queued或模型建议不代表清理完成。
+
+## 清理管家（build 12）
+
+`guardian_get` 返回偏好、真实定时任务状态、最近报告、已恢复项目数量及网站绑定状态。当前绑定为 pending，不代表已接入网站。`guardian_save` 仅保存保留习惯，不启用定时任务或授予删除权限。
+
+```json
+{"cmd":"guardian_get"}
+{"cmd":"guardian_save","preferences":{"cache_days":30,"log_days":90,"clean_cache":true,"clean_logs":true}}
+```
+
+缓存保留14–3650天、日志保留90–3650天；默认30/90天。自动候选还必须通过原白名单、保护、占用与身份检查。恢复过的原路径及后代不再进入自动清理；手工清理仍按明确选择处理。读取偏好或恢复历史失败时暂停自动移动并保存报告，执行过程中再次读取偏好。
+
+无窗口检查可使用 `--guardian-check`，只读状态；定时执行仍由 `--scheduled-run` 入口负责。网站Agent只能在正式凭证下登记并回读，不把本机管家名称当作网站绑定。
