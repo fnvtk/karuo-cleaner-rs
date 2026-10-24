@@ -73,7 +73,7 @@ fn service(state: &Arc<Mutex<State>>) -> TrashService {
 fn restore_views(state:&Arc<Mutex<State>>,paths:&[String]){
     use std::os::unix::fs::MetadataExt;
     let files:Vec<_>=paths.iter().filter_map(|p|{let m=fs::symlink_metadata(p).ok()?;if !m.is_file(){return None}Some((PathBuf::from(p),m.blocks().saturating_mul(512),m.dev(),m.ino()))}).collect();
-    let mut d=state.lock().unwrap();d.sessions.restore_paths(paths);d.space_cache.lock().unwrap().restore_files(&files);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));
+    let mut d=state.lock().unwrap();d.sessions.restore_paths(paths);d.space_cache.lock().unwrap().restore_files(&files);space::snapshot::request_save(d.space_cache.clone());let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));
 }
 fn records(state: &Arc<Mutex<State>>, proxy: &EventLoopProxy<UiEvent>) {
     if let Ok(bytes) = fs::read(journal()) {
@@ -126,7 +126,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
     let days = if request["old_only"].as_bool().unwrap_or(false) { Some(90) } else { None };
     let root = {let data=state.lock().unwrap();if module=="large"{request["volume"].as_str().and_then(|id|data.volumes.iter().find(|v|v.id==id)).map(|v|PathBuf::from(&v.scan_root)).or_else(||data.roots.get(&module).cloned())}else{data.roots.get(&module).cloned()}};
     if ["space","large"].contains(&module.as_str())&&root.is_none(){scan_error(&proxy,request,"请先选择硬盘或文件夹。已有结果已保留。");return;}
-    let token=state.lock().unwrap().sessions.start(&module,request_id);
+    let token={let mut data=state.lock().unwrap();if module!="space"{if let Err(e)=sessions::mark_started(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"),&module,request_id){scan_error(&proxy,request,&format!("无法保存扫描开始状态：{e}；已有结果保留。"));return;}}data.sessions.start(&module,request_id)};
     let root=root.map(|r|if r==Path::new("/")&&Path::new("/System/Volumes/Data").is_dir(){PathBuf::from("/System/Volumes/Data")}else{r});
     emit(&proxy,json!({"event":"scan_started","module":module,"request_id":request_id}));
     thread::spawn(move || {
@@ -144,7 +144,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
             _ => ScanResult::default(),
         }));
         let mut result=match scan_result {Ok(result)=>result,Err(_)=>{
-            let page={let mut data=state.lock().unwrap_or_else(|e|e.into_inner());if !data.sessions.fail(&module,request_id,"扫描器遇到异常，已保留现有结果。请重新扫描；没有修改文件。"){return}let _=data.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));data.sessions.page(&module,None)};
+            let page={let mut data=state.lock().unwrap_or_else(|e|e.into_inner());if !data.sessions.fail(&module,request_id,"扫描器遇到异常，已保留现有结果。请重新扫描；没有修改文件。"){return}let path=home().join("Library/Application Support/KaruoCleaner/scan-sessions.json");if data.sessions.save(&path).is_ok(){let _=sessions::mark_finished(&path,&module,request_id);}data.sessions.page(&module,None)};
             emit(&proxy,json!({"event":"result","module":module,"request_id":request_id,"data":page}));return;
         }};
         result.entries.sort_by(|a, b| b.size.cmp(&a.size));
@@ -157,7 +157,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
             }
             if module=="large" {if let (Some(parent),Ok(bytes))=(saved_roots().parent(),serde_json::to_vec(&data.allowed)) {let _=fs::create_dir_all(parent);let _=fs::write(saved_roots(),bytes);}}
         }
-        let page={let mut d=state.lock().unwrap();d.sessions.update(&module,request_id,result,true);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));d.sessions.page(&module,None)};
+        let page={let mut d=state.lock().unwrap();d.sessions.update(&module,request_id,result,true);let path=home().join("Library/Application Support/KaruoCleaner/scan-sessions.json");if d.sessions.save(&path).is_ok(){let _=sessions::mark_finished(&path,&module,request_id);}else{message(&proxy,"扫描结果本次仍可查看，但未完整保存，请保留原快照并重试。",true);}d.sessions.page(&module,None)};
         emit(&proxy, json!({"event":"result","module":module,"data":page,"request_id":request_id}));
         ready(&proxy);
     });
@@ -180,11 +180,11 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
         "space_cleanup_plan" => {let cache=state.lock().unwrap().space_cache.clone();let chosen=ids(&request);let (candidates,root)={let c=cache.lock().unwrap();let selection=if request["selection"].is_object(){Some((request["selection"]["query"].as_str().unwrap_or(""),request["selection"]["show_hidden"].as_bool().unwrap_or(false)))}else{None};let entries=match c.cleanup_candidates(&chosen,selection){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};(entries,c.root.clone())};thread::spawn(move||match cleanup::build_plan(candidates,root){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)});},
         "cleanup_plan_page" => {match cleanup::page_plan(request["plan_id"].as_str().unwrap_or(""),request["page"].as_u64().unwrap_or(0)as usize){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},
         "cleanup_analyze" => {let id=request["plan_id"].as_str().unwrap_or("").to_owned();thread::spawn(move||match cleanup::analyze_plan(&id){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)});},
-        "cleanup_apply" => {let entries=match cleanup::approved_entries(request["plan_id"].as_str().unwrap_or(""),&ids(&request),request["all"].as_bool().unwrap_or(false)){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"此计划没有可处理的明确候选。",true);return}if !(request["api_confirmed"]==true||confirm("将空间分析中所选文件移入废纸篓？",&format!("共 {} 个普通文件。目录只展开已索引文件，保护项已排除；每项仍会重新验证身份和占用。可用撤销恢复最近一批。",entries.len()))){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();for e in &entries{if let Some(p)=Path::new(&e.path).parent(){if !allowed.iter().any(|r|p.starts_with(r)){allowed.push(p.to_path_buf());}}}let report=TrashService::new(allowed.clone(),journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}for p in allowed{if !d.allowed.contains(&p){d.allowed.push(p)}}let _=schedule::atomic_json(&saved_roots(),&d.allowed);d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}drop(_busy_reset);emit(&proxy,json!({"event":"moved","module":"space","paths":paths,"count":report.records.len(),"size":report.records.iter().map(|r|r.size).sum::<u64>(),"errors":report.failures,"undo_available":!report.records.is_empty()}));ready(&proxy);});},
+        "cleanup_apply" => {let entries=match cleanup::approved_entries(request["plan_id"].as_str().unwrap_or(""),&ids(&request),request["all"].as_bool().unwrap_or(false)){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"此计划没有可处理的明确候选。",true);return}if !(request["api_confirmed"]==true||confirm("将空间分析中所选文件移入废纸篓？",&format!("共 {} 个普通文件。目录只展开已索引文件，保护项已排除；每项仍会重新验证身份和占用。可用撤销恢复最近一批。",entries.len()))){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();for e in &entries{if let Some(p)=Path::new(&e.path).parent(){if !allowed.iter().any(|r|p.starts_with(r)){allowed.push(p.to_path_buf());}}}let report=TrashService::new(allowed.clone(),journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}for p in allowed{if !d.allowed.contains(&p){d.allowed.push(p)}}let _=schedule::atomic_json(&saved_roots(),&d.allowed);d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);space::snapshot::request_save(d.space_cache.clone());let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}drop(_busy_reset);emit(&proxy,json!({"event":"moved","module":"space","paths":paths,"count":report.records.len(),"size":report.records.iter().map(|r|r.size).sum::<u64>(),"errors":report.failures,"undo_available":!report.records.is_empty()}));ready(&proxy);});},
         "undo_last" => {let batch=state.lock().unwrap().last_moved.clone();if batch.is_empty(){message(&proxy,"本次启动尚无可撤销的清理批次；之前的操作请在历史中恢复。",true);return}let history=service(&state).history();let chosen:Vec<_>=batch.into_iter().filter(|r|history.iter().any(|h|h.id==r.id&&!h.restored)).collect();if chosen.is_empty(){message(&proxy,"最近一批已经恢复或记录已变化。",true);return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();for r in &chosen{if let Some(p)=Path::new(&r.original_path).parent(){allowed.push(p.to_path_buf())}}let errors=TrashService::new(allowed,journal()).restore(&chosen);let now=service(&state).history();let restored_paths:Vec<_>=chosen.iter().filter(|r|now.iter().any(|h|h.id==r.id&&h.restored)).map(|r|r.original_path.clone()).collect();restore_views(&state,&restored_paths);{let mut d=state.lock().unwrap();d.last_moved.retain(|r|now.iter().any(|h|h.id==r.id&&!h.restored));}drop(_busy_reset);emit(&proxy,json!({"event":"undo","restored":chosen.iter().filter(|r|now.iter().any(|h|h.id==r.id&&h.restored)).count(),"errors":errors}));records(&state,&proxy);ready(&proxy);});},
         "uninstall_plan" => {let entries={let d=state.lock().unwrap();if request["selection"].is_object(){d.sessions.selected("uninstall",request["selection"]["category"].as_str().unwrap_or("all"),request["selection"]["query"].as_str().unwrap_or(""))}else{let mut chosen=ids(&request);if let Some(id)=request["id"].as_str(){chosen.push(id.into())}chosen.iter().filter_map(|id|d.approved.get(id).cloned()).collect::<Vec<_>>()}};if entries.len()!=1{message(&proxy,"深度卸载请一次选择一个应用，便于逐项核对关联资料。",true);return}match uninstall::build_plan(&entries[0]){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},
         "uninstall_analyze" => {let id=request["plan_id"].as_str().unwrap_or("").to_owned();thread::spawn(move||match uninstall::analyze_plan(&id){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)});},
-        "uninstall_apply" => {let chosen=ids(&request);let entries=match uninstall::approved_entries(request["plan_id"].as_str().unwrap_or(""),&chosen){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"请明确选择计划中的项目。",true);return}if !(request["api_confirmed"]==true||confirm("移入废纸篓所选卸载项目？","关联资料可能包含登录状态和应用设置；只处理你勾选且已审阅的精确路径，移入废纸篓可恢复。")){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();allowed.push(home().join("Library"));let report=TrashService::new(allowed,journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}drop(_busy_reset);emit(&proxy,json!({"event":"moved","paths":paths,"count":report.records.len(),"errors":report.failures}));ready(&proxy);});},
+        "uninstall_apply" => {let chosen=ids(&request);let entries=match uninstall::approved_entries(request["plan_id"].as_str().unwrap_or(""),&chosen){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};if entries.is_empty(){message(&proxy,"请明确选择计划中的项目。",true);return}if !(request["api_confirmed"]==true||confirm("移入废纸篓所选卸载项目？","关联资料可能包含登录状态和应用设置；只处理你勾选且已审阅的精确路径，移入废纸篓可恢复。")){return}busy.store(true,Ordering::SeqCst);thread::spawn(move||{let _busy_reset=BusyReset(busy.clone());let mut allowed=state.lock().unwrap().allowed.clone();allowed.push(home().join("Library"));let report=TrashService::new(allowed,journal()).move_entries(&entries);let paths:Vec<_>=report.records.iter().map(|r|r.original_path.clone()).collect();{let mut d=state.lock().unwrap();if !report.records.is_empty(){d.last_moved=report.records.clone();}d.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));d.sessions.remove_paths(&paths);d.space_cache.lock().unwrap().remove_paths(&paths);space::snapshot::request_save(d.space_cache.clone());let _=d.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));}drop(_busy_reset);emit(&proxy,json!({"event":"moved","paths":paths,"count":report.records.len(),"errors":report.failures}));ready(&proxy);});},
         "startup_get" => emit(&proxy,startup::list()),
         "startup_set" => {let selected=ids(&request);let enabled=request["enabled"].as_bool().unwrap_or(false);if request["api_confirmed"]==true||confirm("更改所选登录项？","只更改可管理的当前用户登录项，不删除配置文件。确认后生效。") {emit(&proxy,startup::set(&selected,enabled));}},
 
@@ -238,18 +238,26 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                     let root=if selected==Path::new("/")&&Path::new("/System/Volumes/Data").is_dir(){"/System/Volumes/Data".into()}else{selected.to_string_lossy().into_owned()};
                     space::Volume{id:path.into(),name:path.into(),mount:path.into(),scan_root:root,total:0,available:0,used:0,internal:false}
                 } else {let Some(volume)=data.volumes.iter().find(|v|v.id==id).cloned()else{scan_error(&proxy,&request,"请选择已挂载的硬盘。已有结果已保留。");return;};volume};
+                if let Err(e)=space::snapshot::begin(Path::new(&volume.scan_root)){scan_error(&proxy,&request,&format!("无法保存扫描状态：{e}；已有结果仍保留。"));return;}
                 let token=data.sessions.start("space",request_id);
-                let cache = Arc::new(Mutex::new(space::Cache::default())); data.space_cache = cache.clone();
+                let cache = Arc::new(Mutex::new(space::Cache::default()));cache.lock().unwrap().volume_id=Some(volume.id.clone()); data.space_cache = cache.clone();
                 (volume,cache,token)
             };
             emit(&proxy,json!({"event":"scan_started","module":"space","request_id":request_id}));
             let fail_token=token.clone();
+            let snapshot_epoch=space::snapshot::epoch();
             thread::spawn(move || {
                 let volume_id = volume.id.clone();
-                let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||space::scan(PathBuf::from(volume.scan_root),token,cache,|data| {
+                let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||space::scan(PathBuf::from(volume.scan_root),token,cache.clone(),|data| {
                     if state.lock().unwrap().sessions.current("space",request_id) {emit(&proxy,json!({"event":"space_view","volume":volume_id,"request_id":request_id,"data":data}));}
                 })));
                 {let mut d=state.lock().unwrap();if d.sessions.current("space",request_id){if let Some(s)=d.sessions.items.get_mut("space"){s.done=true;}d.sessions.jobs.remove("space");}}
+                if result.is_ok(){
+                    cache.lock().unwrap().volume_id=Some(volume_id.clone());
+                    let saved=space::snapshot::save(&cache,snapshot_epoch);
+                    let data={let mut c=cache.lock().unwrap();match saved{Ok(_)=>{},Err(e) if space::snapshot::superseded(&e)=>{},Err(e)=>c.snapshot_notice=Some(format!("空间结果未保存：{e}"))}c.view()};
+                    if state.lock().unwrap().sessions.items.get("space").is_some_and(|s|s.request_id==request_id){emit(&proxy,json!({"event":"space_view","module":"space","request_id":request_id,"data":data}));}
+                }
                 if result.is_err() {fail_token.store(true,Ordering::SeqCst);}
                 if result.is_err() && state.lock().unwrap().sessions.items.get("space").is_some_and(|s|s.request_id==request_id){emit(&proxy,json!({"event":"space_error","request_id":request_id,"text":"扫描器遇到读取错误，已停止。没有修改任何文件，请换目录重试。"}));}
             });
@@ -258,11 +266,17 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             let path = PathBuf::from(request["path"].as_str().unwrap_or(""));
             let request_id = request["request_id"].as_u64().unwrap_or(0);
             let cache = state.lock().unwrap().space_cache.clone();
-            thread::spawn(move || {let mut c=cache.lock().unwrap();if c.browse(&path){let data=c.view_page(request["page"].as_u64().unwrap_or(0) as usize,request["query"].as_str().unwrap_or(""),request["show_hidden"].as_bool().unwrap_or(false));emit(&proxy,json!({"event":"space_view","request_id":request_id,"data":data}));}});
+            thread::spawn(move || {let mut c=cache.lock().unwrap();if c.browse(&path){let data=c.view_page(request["page"].as_u64().unwrap_or(0) as usize,request["query"].as_str().unwrap_or(""),request["show_hidden"].as_bool().unwrap_or(false));if let Err(e)=space::snapshot::save_view(&c){c.snapshot_notice=Some(format!("浏览位置未保存：{e}"));}emit(&proxy,json!({"event":"space_view","request_id":request_id,"data":data}));}});
         },
         "ready" => ready(&proxy),
         "scan" => scan(&request, state, proxy, generation, busy),
-        "cancel" => {if let Some(module)=request["module"].as_str(){state.lock().unwrap().sessions.cancel(module);}},
+        "cancel" => {if let Some(module)=request["module"].as_str(){
+            let stopped={let mut d=state.lock().unwrap();d.sessions.cancel(module);if module=="space"&&d.sessions.jobs.contains_key(module){let id=d.sessions.items[module].request_id;d.sessions.jobs.remove(module);if let Some(s)=d.sessions.items.get_mut(module){s.done=true;s.outcome="cancelled".into();}Some((d.space_cache.clone(),id))}else{None}};
+            if let Some((cache,id))=stopped{
+                let view={let mut c=cache.lock().unwrap();c.stop_partial();c.view()};emit(&proxy,json!({"event":"space_view","module":"space","request_id":id,"data":view}));let snapshot_epoch=space::snapshot::epoch();
+                thread::spawn(move||{let result=space::snapshot::save(&cache,snapshot_epoch);let view={let mut c=cache.lock().unwrap();if let Err(e)=result{if !space::snapshot::superseded(&e){c.snapshot_notice=Some(format!("部分空间结果未保存：{e}"));}}c.view()};if state.lock().unwrap().sessions.items.get("space").is_some_and(|s|s.request_id==id){emit(&proxy,json!({"event":"space_view","module":"space","request_id":id,"data":view}));}});
+            }
+        }},
         "root_set" => {let module=request["module"].as_str().unwrap_or("space");if !["space","large"].contains(&module){message(&proxy,"此模块不支持自定义扫描目录。",true);return}let path=PathBuf::from(request["path"].as_str().unwrap_or(""));if !path.is_absolute(){message(&proxy,"扫描目录必须是绝对路径。",true);return}match fs::canonicalize(path){Ok(root) if root.is_dir()=>{state.lock().unwrap().roots.insert(module.into(),root.clone());emit(&proxy,json!({"event":"root","module":module,"path":root,"read_only":true}));},_=>message(&proxy,"所选目录不存在或无法读取。",true)}},
         "pick_root" => {
             let module = request["module"].as_str().unwrap_or("space");
@@ -309,7 +323,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                 {
                     let mut data = state.lock().unwrap();
                     if !result.records.is_empty(){data.last_moved=result.records.clone();}
-                    data.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));data.sessions.remove_paths(&paths);data.space_cache.lock().unwrap().remove_paths(&paths);let _=data.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));
+                    data.approved.retain(|_,e|!paths.iter().any(|p|e.path==*p||Path::new(&e.path).starts_with(p)));data.sessions.remove_paths(&paths);data.space_cache.lock().unwrap().remove_paths(&paths);space::snapshot::request_save(data.space_cache.clone());let _=data.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));
                 }
                 drop(_busy_reset);
                 emit(&proxy, json!({"event":"moved","paths":paths,"count":result.records.len(),"size":size,"errors":result.failures}));
@@ -457,11 +471,27 @@ fn main() -> wry::Result<()> {
     }
     allowed.retain(|p| p.exists());
     let state = Arc::new(Mutex::new(State { volumes: Vec::new(), space_cache: Arc::new(Mutex::new(space::Cache::default())), approved: HashMap::new(), roots: HashMap::new(), allowed, sessions: sessions::Sessions::default(), last_moved:Vec::new() }));
-    {let mut data=state.lock().unwrap();if let Ok(items)=sessions::Sessions::load(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json")){for session in items.values(){for e in &session.result.entries{data.approved.insert(e.id.clone(),e.clone());}}data.sessions.items=items;}}
+    let session_load_error={let mut data=state.lock().unwrap();match sessions::Sessions::load(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json")){Ok(items)=>{for session in items.values(){for e in &session.result.entries{data.approved.insert(e.id.clone(),e.clone());}}data.sessions.items=items;None},Err(e)=>Some(e)}};
     let busy = Arc::new(AtomicBool::new(false));
     let generation = Arc::new(AtomicU64::new(0));
     let proxy = event_loop.create_proxy();
     let hub=control::start(proxy.clone()).unwrap_or_else(|e|{eprintln!("本机API未启动，已停止此实例以避免窗口与接口状态分离：{e}");std::process::exit(1)});
+    {
+        let state=state.clone();let proxy=proxy.clone();let original=state.lock().unwrap().space_cache.clone();
+        thread::spawn(move||match space::snapshot::load(){
+            Ok(Some(mut cache))=>{
+                // 历史是真实文件动作记录；不能让上次索引带回已成功移走的项目。
+                let removed:Vec<_>=service(&state).history().into_iter().filter(|r|!r.restored).map(|r|r.original_path).filter(|p|Path::new(p).starts_with(&cache.root)).collect();
+                if !removed.is_empty(){cache.remove_paths(&removed);}
+                let request_id=cache.saved_at.saturating_mul(1000).max(1);let view=cache.view();
+                let mut d=state.lock().unwrap();if !Arc::ptr_eq(&d.space_cache,&original)||d.sessions.jobs.contains_key("space"){return}
+                d.roots.insert("space".into(),cache.root.clone());
+                d.space_cache=Arc::new(Mutex::new(cache));d.sessions.items.insert("space".into(),sessions::Session{request_id,done:true,..Default::default()});drop(d);
+                emit(&proxy,json!({"event":"session","module":"space","request_id":request_id,"scanning":false,"data":view}));
+            },Ok(None)=>{},Err(e)=>{message(&proxy,format!("空间快照未恢复：{e}。原快照已保留，可以重新扫描。"),true)}
+        });
+    }
+    if let Some(error)=session_load_error{message(&proxy,format!("扫描快照未恢复：{error}。原文件已保留。"),true);}
     let ipc_proxy = proxy.clone();
     let webview = WebViewBuilder::new()
         .with_custom_protocol("karuo".into(), |_id, request| {

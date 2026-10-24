@@ -1,5 +1,7 @@
 //! 磁盘空间透镜：只读挂载卷、增量目录索引，与清理授权完全分离。
 use serde::Serialize;
+#[path="space_snapshot.rs"]
+pub mod snapshot;
 use std::os::unix::fs::MetadataExt;
 use std::{
     collections::{HashMap, HashSet},
@@ -105,8 +107,15 @@ pub struct Cache {
     pub scanned: u64,
     pub skipped: u64,
     pub done: bool,
+    pub cancelled:bool,
     pub truncated: bool,
     pub error: Option<String>,
+    pub restored:bool,
+    pub saved_at:u64,
+    pub snapshot_notice:Option<String>,
+    revision:u64,
+    scan_id:u64,
+    pub(crate) volume_id:Option<String>,
     page: usize,
     query: String,
     show_hidden: bool,
@@ -152,11 +161,14 @@ impl Cache {
         let total = self.nodes.get(&self.current).map(|x| x.0).unwrap_or(0);
         let complete =
             self.done && !self.truncated && !self.incomplete_dirs.contains(&self.current);
-        serde_json::json!({"path":self.current.to_string_lossy().into_owned(),"root":self.root.to_string_lossy().into_owned(),"entries":entries,"total":item_total,"page":page,"page_count":page_count,"page_size":50,"scanned":self.scanned,"skipped":self.skipped,"done":self.done,"truncated":self.truncated,"complete":complete,"size":total,"error":self.error})
+        serde_json::json!({"path":self.current.to_string_lossy().into_owned(),"root":self.root.to_string_lossy().into_owned(),"entries":entries,"total":item_total,"page":page,"page_count":page_count,"page_size":50,"scanned":self.scanned,"skipped":self.skipped,"done":self.done,"truncated":self.truncated,"complete":complete,"size":total,"error":self.error,"restored":self.restored,"saved_at":self.saved_at,"snapshot_notice":self.snapshot_notice,"query":self.query,"show_hidden":self.show_hidden,"source_volume":self.volume_id,"cancelled":self.cancelled})
     }
+    /// 停止后保存已发布索引。底层只读系统调用可能仍需等待OS返回。
+    pub fn stop_partial(&mut self){self.revision=self.revision.wrapping_add(1);self.done=true;self.cancelled=true;self.truncated=true;self.snapshot_notice=Some("已停止扫描，正在保存已读取的部分结果。".into());}
     /// 操作成功后从只读索引剔除已移动项目，不重新读取磁盘。
     fn removed(&self,path:&Path)->bool { path.ancestors().any(|p|self.tombstones.contains(p)) }
     pub fn remove_paths(&mut self, paths:&[String]) {
+        self.revision=self.revision.wrapping_add(1);
         let removed:HashSet<PathBuf>=paths.iter().map(PathBuf::from).filter(|p|p.starts_with(&self.root)).collect();
         self.tombstones.extend(removed.iter().cloned());
         let mut parents:HashSet<PathBuf>=HashSet::new();let dirs:HashSet<PathBuf>=removed.iter().filter(|p|self.nodes.contains_key(*p)).cloned().collect();
@@ -167,6 +179,7 @@ impl Cache {
     }
     /// 元数据在锁外读取；只恢复本次曾移走的索引普通文件。
     pub fn restore_files(&mut self,files:&[(PathBuf,u64,u64,u64)]){
+        self.revision=self.revision.wrapping_add(1);
         for (p,size,dev,ino) in files{if !p.starts_with(&self.root)||!self.tombstones.remove(p){continue}let Some(parent)=p.parent()else{continue};if !self.children.contains_key(parent){continue}let list=self.children.get_mut(parent).unwrap();if list.iter().any(|c|parent.join(&c.name)==*p){continue}list.push(SpaceChild{name:p.file_name().unwrap_or_default().into(),size:*size,is_dir:false,device:*dev,inode:*ino});*self.direct_sizes.entry(parent.to_path_buf()).or_default()+=size;}
         let root=self.root.clone();aggregate_directory_sizes(self,&root);
     }
@@ -202,12 +215,15 @@ pub fn scan(
     cache: Arc<Mutex<Cache>>,
     publish: impl Fn(serde_json::Value),
 ) {
+    let volume_id=cache.lock().unwrap().volume_id.clone();
     let meta = match fs::symlink_metadata(&root) {
         Ok(meta) => meta,
         Err(error) => {
             let mut c = cache.lock().unwrap();
             *c = Cache {
                 root: root.clone(),
+                volume_id:volume_id.clone(),
+                scan_id:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
                 current: root.clone(),
                 scanned: 0,
                 skipped: 1,
@@ -237,6 +253,8 @@ pub fn scan(
         let mut c = cache.lock().unwrap();
         *c = Cache {
             root: root.clone(),
+            volume_id,
+            scan_id:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
             current: root.clone(),
             ..Cache::default()
         };
@@ -244,7 +262,7 @@ pub fn scan(
         c.direct_sizes.insert(root.clone(), 0);
         c.children.insert(root.clone(), Vec::new());
     }
-    publish(cache.lock().unwrap().view());
+    let view={cache.lock().unwrap().view()};publish(view);
     #[cfg(target_os = "macos")]
     let fast_ok = scan_bulk_macos(
         &root,
@@ -285,9 +303,12 @@ pub fn scan(
         c.scanned = scanned;
         c.skipped = skipped;
         c.done = true;
+        c.cancelled=cancel.load(Ordering::Relaxed);
+        c.revision=c.revision.wrapping_add(1);
+        c.snapshot_notice=Some("扫描已结束，正在保存空间索引；保存后可跨重启恢复。".into());
         c.truncated = c.truncated || truncated || cancel.load(Ordering::Relaxed);
     }
-    publish(cache.lock().unwrap().view());
+    let view={cache.lock().unwrap().view()};publish(view);
 }
 
 #[cfg(target_os = "macos")]
@@ -609,6 +630,7 @@ fn scan_bulk_macos(
                     stack.push(child.clone());
                     dirs.push(child);
                 }
+                c.revision=c.revision.wrapping_add(1);
                 c.scanned = *scanned;
                 c.skipped = *skipped;
                 if *skipped > skipped_before_page {
@@ -616,7 +638,7 @@ fn scan_bulk_macos(
                 }
             }
             if last.elapsed() >= Duration::from_millis(350) {
-                publish(cache.lock().unwrap().view());
+                let view={cache.lock().unwrap().view()};publish(view);
                 *last = Instant::now();
             }
             if *truncated || cancel.load(Ordering::Relaxed) {
@@ -689,6 +711,7 @@ fn read_attr_value<T: Copy>(buf: &[u8], offset: usize, entry_end: usize) -> Opti
 
 /// 从只读直接值生成目录大小快照；反复调用不会累加旧快照。
 fn aggregate_directory_sizes(c: &mut Cache, root: &Path) {
+    c.revision=c.revision.wrapping_add(1);
     for (path, direct) in &c.direct_sizes {
         if let Some(node) = c.nodes.get_mut(path) {
             node.0 = *direct;
@@ -840,7 +863,7 @@ fn scan_walkdir_fallback(
         if batch.len() >= 512 || last.elapsed() >= Duration::from_millis(350) {
             merge(cache, root, batch, *scanned, *skipped);
             if last.elapsed() >= Duration::from_millis(350) {
-                publish(cache.lock().unwrap().view());
+                let view={cache.lock().unwrap().view()};publish(view);
                 *last = Instant::now();
             }
         }
@@ -854,6 +877,7 @@ fn merge(
     skipped: u64,
 ) {
     let mut c = cache.lock().unwrap();
+    c.revision=c.revision.wrapping_add(1);
     c.scanned = scanned;
     c.skipped = skipped;
     for (path, size, is_dir) in batch.drain(..) {

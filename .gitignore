@@ -20,3 +20,10 @@
 
 # 本机截图原片与标注预览
 /docs/screenshots/raw/
+
+# 本机空间索引和恢复状态只保留在设备，不随源码上传
+*space-index-v1.bin
+*space-view.json
+*space-scan-state.json
+scan-state-*.json
+.space-write-*

@@ -1,0 +1,28 @@
+{
+  "restart": {
+    "restored": true,
+    "total": 126,
+    "page": 2,
+    "page_count": 3,
+    "query_preserved": true,
+    "hidden_preference_preserved": true,
+    "entry_ids_preserved": true
+  },
+  "interruption": {
+    "previous_snapshot_preserved": true,
+    "notice": "上次新扫描未完成，当前显示此前已保存的结果，请重新扫描。"
+  },
+  "scope": "只读扫描和重启；未执行个人文件移动、恢复或永久清理",
+  "real_disk_restore": {
+    "restored": true,
+    "scanned": 46579,
+    "cancelled": true,
+    "partial": true,
+    "source_volume_preserved": true
+  },
+  "final_disk_scan_at_start": {
+    "request_id": 1792814850769,
+    "running": true
+  },
+  "terminal_state": "restored_cancelled_partial"
+}

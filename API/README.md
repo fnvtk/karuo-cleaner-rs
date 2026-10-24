@@ -198,3 +198,9 @@ API 可能先收到 `event:message`，这不是最终 `history`、`startup` 或�
 `session_get` / `scan_page` 的每项增加 `protected` 和 `protection_reason`，整份筛选增加 `selectable_total` 与 `protected_total`。受保护项目保持可见，但客户端应禁选并显示原因。`move.selection` 的全选在后台再次排除当前保护名单和内建路径保护；不要只以当前页判断可处理数量。
 
 这是展示与选择信息，不是清理授权。文件在扫描后可能改变，真正移动前仍以服务端身份、占用和保护校验为准。保护名单暂时无法读取时，`selectable_total=0`，应等待读取恢复，不得当作空名单。
+
+### 空间结果恢复（build17）
+
+`space_start`启动的索引在结束或主动停止后保存；`session_get(module="space")`可回读`restored`、`saved_at`（秒）、`cancelled`、`truncated`、`snapshot_notice`、`source_volume`、`page`、`query`和`show_hidden`。`space_browse`更新浏览位置。`snapshot_notice`提示正在保存、保存失败或新扫描未完成，不应把`done=true`等同于已完整保存或已完整读取整盘。
+
+重启后恢复旧索引不意味着文件仍存在或可以删除；空间清理仍走`space_cleanup_plan`和preview/apply，重新检查真实文件身份与保护规则。索引尚在加载时其他模块仍可用，启动新扫描会使旧恢复任务失效。
