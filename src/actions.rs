@@ -618,9 +618,23 @@ fn running_app(path: &Path) -> bool {
     false
 }
 
+/// NSFileManager uses the account's home for Trash, independently of process HOME.
+/// Resolve the same uid from the OS account database; never trust a caller's HOME
+/// as an additional Trash authority.
+fn account_home()->Option<PathBuf>{
+    use std::{ffi::CStr,os::unix::ffi::OsStrExt};
+    let uid=unsafe{libc::getuid()};let mut buffer=vec![0u8;16384];
+    let mut pwd=std::mem::MaybeUninit::<libc::passwd>::uninit();let mut found=std::ptr::null_mut();
+    let status=unsafe{libc::getpwuid_r(uid,pwd.as_mut_ptr(),buffer.as_mut_ptr().cast(),buffer.len(),&mut found)};
+    if status!=0||found.is_null(){return None}
+    let pwd=unsafe{pwd.assume_init()};if pwd.pw_uid!=uid||pwd.pw_dir.is_null(){return None}
+    let path=PathBuf::from(std::ffi::OsStr::from_bytes(unsafe{CStr::from_ptr(pwd.pw_dir)}.to_bytes()));
+    path.is_absolute().then_some(path)
+}
+
 fn trash_roots_for(original: &Path, device: u64) -> Option<Vec<PathBuf>> {
     let mut roots = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = account_home() {
         let home_trash = home.join(".Trash");
         if fs::metadata(&home_trash).is_ok_and(|meta| meta.dev() == device) { roots.push(home_trash); }
     }
@@ -738,3 +752,8 @@ mod safety_tests {
 }
 
 pub(crate) fn ensure_uninstall_app_closed(path:&Path)->Result<(),String>{if running_app(path){Err("应用仍在运行，请正常退出后再卸载".into())}else{Ok(())}}
+
+#[cfg(test)]mod account_home_tests {
+ use super::*;
+ #[test]fn trash_authority_comes_from_current_os_account(){let home=account_home().expect("current OS account must resolve");assert!(home.is_absolute());let meta=fs::metadata(&home).unwrap();let roots=trash_roots_for(&home,meta.dev()).unwrap();if home.join(".Trash").exists(){assert!(roots.contains(&home.join(".Trash")));}assert!(!roots.contains(&home.join("arbitrary-test-home/.Trash")));}
+}

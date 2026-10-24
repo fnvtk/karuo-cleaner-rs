@@ -70,10 +70,15 @@ pub fn analyze(entries:&[Entry],module:&str)->Value{
 }
 
 /// 对话建议留在本机，模型只能引用匿名编号，不能提供任意删除路径。
-#[derive(Clone)] pub enum Proposal { Cleanup(Vec<Entry>), Schedule(crate::schedule::Config), Restore, Uninstall(Entry) }
+#[derive(Clone)] pub enum Proposal { Cleanup(Vec<Entry>), Schedule(crate::schedule::Config), Restore(Vec<String>), Uninstall(Entry) }
 fn proposals()-> &'static std::sync::Mutex<std::collections::HashMap<String,Proposal>> {static P:std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String,Proposal>>>=std::sync::OnceLock::new();P.get_or_init(Default::default)}
 pub fn proposal(id:&str)->Result<Proposal,String>{proposals().lock().map_err(|_|"建议暂不可用")?.get(id).cloned().ok_or("建议不存在或应用已重启，请重新对话".into())}
 fn retain_proposal(p:Proposal)->String{use std::io::Read;let mut b=[0u8;24];if fs::File::open("/dev/urandom").and_then(|mut f|f.read_exact(&mut b)).is_err(){return String::new()}let id=b.iter().map(|b|format!("{b:02x}")).collect::<String>();if let Ok(mut ps)=proposals().lock(){ps.insert(id.clone(),p);}id}
+pub fn validate_restore_proposal(id:&str,current:&[String])->Result<(),String>{
+    let Proposal::Restore(expected)=proposal(id)? else{return Err("此建议不是撤回操作".into())};
+    let wanted:std::collections::HashSet<_>=expected.iter().collect();let actual:std::collections::HashSet<_>=current.iter().collect();
+    if expected.is_empty()||expected.len()!=wanted.len()||current.len()!=actual.len()||wanted!=actual{return Err("最近清理批次已变化，请重新询问撤回；没有恢复其他批次。".into())}Ok(())
+}
 fn local_role(e:&Entry)->(&'static str,bool,&'static str){
  let p=Path::new(&e.path);if let Some(reason)=safety::path_protection_reason(p){return("受保护",false,reason)}
  if e.kind=="application"{return("应用包",false,"卸载需要关联清单和明确确认")}
@@ -91,7 +96,7 @@ fn redact_text(text:&str,entries:&[Entry])->String{
  s.split_whitespace().map(|word|if word.contains("sk-"){"[已隐藏密钥]".to_string()}else if word.contains('/')||word.contains('\\'){"[已隐藏路径]".to_string()}else{word.to_owned()}).collect::<Vec<_>>().join(" ")
 }
 fn schedule_draft_reply(c:&crate::schedule::Config)->String{format!("已准备{} {:02}:{:02} 的{}草案，确认保存后才生效。",if c.frequency=="daily"{"每天"}else{"每周一"},c.hour,c.minute,if c.mode=="trash"{"保守清理"}else{"仅扫描"})}
-pub fn chat(entries:&[Entry],module:&str,text:&str,history:&[Value],_context:Value)->Value{
+pub fn chat(entries:&[Entry],module:&str,text:&str,history:&[Value],context:Value)->Value{
  let text=text.trim();if text.is_empty(){return json!({"event":"ai_chat","module":module,"source":"rules","reply":"你可以问：哪些适合清理？这些文件为什么占空间？或帮我安排每周扫描。","proposals":[]})}
  let ignored=safety::load_ignored_paths();
  let mut groups:BTreeMap<&str,(u64,u64,u64)>=BTreeMap::new();let mut recommended=Vec::new();let mut samples=Vec::new();
@@ -108,7 +113,7 @@ pub fn chat(entries:&[Entry],module:&str,text:&str,history:&[Value],_context:Val
  match action{
  "cleanup"=>{let chosen:Vec<Entry>=if v["scope"]=="recommended"{recommended}else{v["refs"].as_array().into_iter().flatten().filter_map(|r|r.as_str()?.strip_prefix('f')?.parse::<usize>().ok()).filter_map(|i|entries.get(i)).filter(|e|local_role(e).1&&!ignored.as_ref().map_or(true,|v|safety::matches_ignored(Path::new(&e.path),v))).cloned().collect()};if !chosen.is_empty(){let n=chosen.len();let bytes=chosen.iter().fold(0u64,|n,e|n.saturating_add(e.size));let id=retain_proposal(Proposal::Cleanup(chosen));if !id.is_empty(){actions.push(json!({"id":id,"title":format!("查看 {n} 项清理清单"),"kind":"cleanup","count":n,"bytes":bytes}))}}},
  "schedule"=>{let s=&v["schedule"];let config=crate::schedule::Config{enabled:true,frequency:if s["frequency"]=="daily"{"daily"}else{"weekly"}.into(),hour:s["hour"].as_u64().filter(|n|*n<24).unwrap_or(10)as u8,minute:s["minute"].as_u64().filter(|n|*n<60).unwrap_or(0)as u8,mode:if s["mode"]=="trash"{"trash"}else{"scan"}.into()};reply=schedule_draft_reply(&config);let id=retain_proposal(Proposal::Schedule(config));actions.push(json!({"id":id,"title":"填入定时清理设置","kind":"schedule"}));},
- "restore"=>{let id=retain_proposal(Proposal::Restore);actions.push(json!({"id":id,"title":"撤回上次清理","kind":"restore"}));},
+ "restore"=>{let targets:Vec<String>=context["restore_ids"].as_array().into_iter().flatten().filter_map(|v|v.as_str().map(str::to_owned)).collect();if targets.is_empty(){reply="当前没有本次启动可撤回的清理批次；较早的操作请在清理历史中恢复。".into()}else{let id=retain_proposal(Proposal::Restore(targets));if !id.is_empty(){actions.push(json!({"id":id,"title":"撤回上次清理","kind":"restore"}));}}},
  "uninstall" if entries.len()==1&&entries[0].kind=="application"=>{let id=retain_proposal(Proposal::Uninstall(entries[0].clone()));actions.push(json!({"id":id,"title":"查看应用与关联残留","kind":"cleanup"}));},_=>{}}
  json!({"event":"ai_chat","module":module,"source":"ai","reply":reply,"proposals":actions,"usage":usage,"analyzed_count":entries.len(),"recommended_count":groups.values().map(|x|x.2).sum::<u64>(),"privacy":"匿名角色与统计；对话中的路径、已选文件名和密钥会隐藏"})}}
 }
@@ -119,5 +124,7 @@ pub fn chat(entries:&[Entry],module:&str,text:&str,history:&[Value],_context:Val
  #[test]fn conversation_redacts_paths_keys_and_known_names(){let e=file("/fixture/project/target/debug/deps/owned-file.rlib");let r=redact_text("看看 owned-file.rlib /fixture/private/data sk-test-secret",&[e]);assert!(!r.contains("owned-file.rlib"));assert!(!r.contains("/fixture"));assert!(!r.contains("sk-test-secret"));}
  #[test]fn sensitive_build_filename_is_never_recommended(){assert!(!local_role(&file("/fixture/project/target/debug/deps/credentials.rlib")).1);assert!(!local_role(&file("/fixture/project/target/debug/deps/passwords.rmeta")).1);}
  #[test]fn schedule_reply_uses_real_weekday_and_mode(){let c=crate::schedule::Config{enabled:true,frequency:"weekly".into(),hour:10,minute:5,mode:"scan".into()};let r=schedule_draft_reply(&c);assert!(r.contains("每周一 10:05")&&r.contains("仅扫描")&&r.contains("确认保存"));}
+ #[test]fn restore_proposal_cannot_follow_a_newer_batch(){let id=retain_proposal(Proposal::Restore(vec!["batch-A-file".into()]));assert!(validate_restore_proposal(&id,&["batch-A-file".into()]).is_ok());assert!(validate_restore_proposal(&id,&["batch-B-file".into()]).is_err());assert!(validate_restore_proposal(&id,&[]).is_err());assert!(validate_restore_proposal(&id,&["batch-A-file".into(),"batch-A-file".into()]).is_err());}
+ #[test]fn non_restore_proposal_cannot_authorize_recovery(){let id=retain_proposal(Proposal::Cleanup(vec![]));assert!(validate_restore_proposal(&id,&["batch-A".into()]).is_err());}
  #[test]fn fabricated_ai_proposal_cannot_execute(){assert!(proposal("model-invented-path").is_err());}
 }

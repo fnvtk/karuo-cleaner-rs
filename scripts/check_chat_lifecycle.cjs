@@ -4,7 +4,7 @@ const func=n=>source.split('\n').find(l=>l.trimStart().startsWith('function '+n+
 const state={active:'junk',activeRequestId:31,category:'cache',query:'',selected:new Set(),excludedIds:new Set(),allSelected:false};
 const nodes={},posts=[],timers=new Map(),conversations=new Map();let timerId=0,connected=true;
 const ctx=vm.createContext({state,conversations,assistantOpen:true,chatSequence:0,Date,Set,$:id=>nodes[id]||(nodes[id]={value:''}),post:(cmd,p)=>{posts.push({cmd,...p});return connected},openAssistant(){},renderConversation(){},clearTimeout:id=>timers.delete(id),setTimeout:fn=>{timers.set(++timerId,fn);return timerId}});
-vm.runInContext(['conversation','finishChat','sendChat','invalidateChat'].map(func).join('\n'),ctx);
+vm.runInContext(['conversation','finishChat','sendChat','invalidateChat','applyProposal'].map(func).join('\n'),ctx);
 vm.runInContext('sendChat("分析当前选择")',ctx);let c=conversations.get('junk'),first=c.requestId;assert(c.pending);
 vm.runInContext('finishChat(event)',vm.createContext({...ctx,event:{module:'junk',chat_request_id:'wrong',reply:'late'}}));assert(c.pending);
 ctx.event={module:'junk',chat_request_id:first,source:'rules',error:'选择已失效',reply:'未执行清理',proposals:[{kind:'cleanup'}]};vm.runInContext('finishChat(event)',ctx);assert(!c.pending);assert.equal(c.messages.at(-1).proposals.length,0);assert.equal(timers.size,0);
@@ -12,4 +12,5 @@ vm.runInContext('sendChat("再试一次")',ctx);let second=c.requestId;assert.no
 [...timers.values()][0]();assert(!c.pending);ctx.event={module:'junk',chat_request_id:second,reply:'late after timeout',proposals:[{kind:'cleanup'}]};const count=c.messages.length;vm.runInContext('finishChat(event)',ctx);assert.equal(c.messages.length,count);
 connected=false;vm.runInContext('sendChat("连接失败")',ctx);assert(!c.pending);assert.equal(timers.size,0);assert(c.messages.at(-1).text.includes('未发送'));
 connected=true;vm.runInContext('sendChat("准备切换")',ctx);c.messages[0].proposals=[{kind:'cleanup'}];vm.runInContext('invalidateChat("junk","已重新扫描")',ctx);assert(!c.pending);assert(c.messages.every(m=>!m.proposals?.length));assert.equal(timers.size,0);
+vm.runInContext('applyProposal({kind:"restore",id:"bound-receipt"})',ctx);assert.equal(posts.at(-1).cmd,'undo_last');assert.equal(posts.at(-1).proposal_id,'bound-receipt');
 console.log('PASS failed selection, delayed reply, timeout, retry and missing connection all terminate the correct chat without actions');
