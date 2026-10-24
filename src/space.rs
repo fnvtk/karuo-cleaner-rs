@@ -185,9 +185,13 @@ impl Cache {
     }
     /// 只展开已索引普通文件。调用者释放缓存锁后才做文件身份复核。
     pub fn cleanup_candidates(&self,ids:&[String],selection:Option<(&str,bool)>)->Result<Vec<(PathBuf,u64,u64)>,String>{
+        self.cleanup_candidates_excluding(ids,selection,&[])
+    }
+    pub fn cleanup_candidates_excluding(&self,ids:&[String],selection:Option<(&str,bool)>,excluded:&[String])->Result<Vec<(PathBuf,u64,u64)>,String>{
+        let excluded:HashSet<PathBuf>=excluded.iter().map(PathBuf::from).collect();
         let direct=self.children.get(&self.current).into_iter().flatten();
         let wanted:HashSet<PathBuf>=ids.iter().map(PathBuf::from).collect();let query=selection.map(|(q,_)|q.to_lowercase()).unwrap_or_default();
-        let selected:HashSet<PathBuf>=direct.filter(|c|{let p=self.current.join(&c.name);if let Some((_,hidden))=selection {(hidden||!c.name.to_string_lossy().starts_with('.'))&&c.name.to_string_lossy().to_lowercase().contains(&query)}else{wanted.contains(&p)}}).map(|c|self.current.join(&c.name)).collect();
+        let selected:HashSet<PathBuf>=direct.filter(|c|{let p=self.current.join(&c.name);if excluded.contains(&p){return false}if let Some((_,hidden))=selection {(hidden||!c.name.to_string_lossy().starts_with('.'))&&c.name.to_string_lossy().to_lowercase().contains(&query)}else{wanted.contains(&p)}}).map(|c|self.current.join(&c.name)).collect();
         if selection.is_none()&&!wanted.is_subset(&selected){return Err("选择不属于当前索引目录".into())}
         let mut out=Vec::new();
         // 目录按祖先集合判定一次，避免数百万索引文件乘以数千选择项。
@@ -893,6 +897,15 @@ mod tests {
         let found=c.cleanup_candidates(&[dir.to_string_lossy().into()],None).unwrap();assert_eq!(found.len(),1);assert_eq!(found[0].0,dir.join("file"));
         assert!(c.cleanup_candidates(&["/System/arbitrary".into()],None).is_err());
         assert_eq!(c.cleanup_candidates(&[],Some(("A",true))).unwrap().len(),1);
+    }
+    #[test]
+    fn bulk_selection_excludes_folder_subtree_and_keeps_other_pages(){
+        let root=PathBuf::from("/fixture");let dir=root.join("A");let mut c=Cache{root:root.clone(),current:root.clone(),..Cache::default()};
+        let mut items:Vec<_>=(0..151).map(|i|SpaceChild{name:format!("file-{i}" ).into(),size:1,is_dir:false,device:1,inode:i}).collect();
+        items.push(SpaceChild{name:"A".into(),size:0,is_dir:true,device:1,inode:999});c.children.insert(root.clone(),items);
+        c.children.insert(dir.clone(),vec![SpaceChild{name:"inside".into(),size:1,is_dir:false,device:1,inode:1000}]);
+        let found=c.cleanup_candidates_excluding(&[],Some(("",true)),&[dir.to_string_lossy().into(),root.join("file-51").to_string_lossy().into()]).unwrap();
+        assert_eq!(found.len(),150);assert!(found.iter().any(|e|e.0==root.join("file-150")));assert!(!found.iter().any(|e|e.0.starts_with(&dir)||e.0==root.join("file-51")));
     }
     #[test]
     fn removed_paths_cannot_return_from_queued_batch() {
