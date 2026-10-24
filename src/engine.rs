@@ -623,6 +623,11 @@ pub(crate) fn protected_junk_path(path: &Path, root: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return true;
     };
+    // 仅在真实 Caches 范围审阅厂商缓存，日志不放宽；敏感子目录始终保留。
+    static RULES: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    let rules=RULES.get_or_init(||serde_json::from_str(include_str!("../Assets/cleanup-rules.json")).expect("bundled cleanup rules"));
+    if relative.components().any(|part| {let name=part.as_os_str().to_string_lossy().to_lowercase();rules["preserve_components"].as_array().unwrap().iter().any(|v|name.contains(v.as_str().unwrap()))}) {return true}
+    let cache_review=root.ends_with("Caches");
     let protected = [
         "safari",
         "chrome",
@@ -655,7 +660,7 @@ pub(crate) fn protected_junk_path(path: &Path, root: &Path) -> bool {
     ];
     relative.components().any(|component| {
         let name = component.as_os_str().to_string_lossy().to_lowercase();
-        protected.iter().any(|needle| name.contains(needle))
+        protected.iter().any(|needle| name.contains(needle) && !(cache_review && rules["cache_vendor_review"].as_array().unwrap().iter().any(|v|v.as_str()==Some(*needle))))
     })
 }
 
@@ -774,6 +779,13 @@ mod tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    #[test] fn cache_review_is_precise_and_keeps_sensitive_data() {
+        let root=Path::new("/fixture/Library/Caches");
+        assert!(!protected_junk_path(&root.join("com.google.Chrome/Default/Cache/data_1"),root));
+        assert!(!protected_junk_path(&root.join("com.apple.help/cache.bin"),root));
+        for name in ["com.google.Chrome/Default/Cookies", "com.google.Chrome/Local Storage/item", "com.tencent.WeChat/cache.bin", "KaruoCleaner/state"] {assert!(protected_junk_path(&root.join(name),root),"{name}");}
+        let logs=Path::new("/fixture/Library/Logs");assert!(protected_junk_path(&logs.join("com.apple/run.log"),logs));
+    }
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
     fn fixture() -> PathBuf {

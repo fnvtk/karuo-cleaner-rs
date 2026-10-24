@@ -1,0 +1,40 @@
+{
+  "version": "2026-10-24.1",
+  "source": "本项目安全规则；当前Runtime授权资料中未找到电脑清理经验",
+  "cache_review_days": 7,
+  "log_review_days": 30,
+  "cache_vendor_review": [
+    "safari",
+    "chrome",
+    "chromium",
+    "firefox",
+    "edge",
+    "browser",
+    "webkit",
+    "google",
+    "mozilla",
+    "com.apple"
+  ],
+  "preserve_components": [
+    "cookies",
+    "local storage",
+    "session storage",
+    "indexeddb",
+    "sessions",
+    "sessionstore",
+    "login data",
+    "web data",
+    "history",
+    "bookmarks",
+    "keychains",
+    "karuo",
+    "codex"
+  ],
+  "workflow": [
+    "先扫描并显示真实候选数量和体积",
+    "缓存至少7天、日志至少30天；定时清理遵守更严格的管家设置",
+    "数据库、凭证、聊天资料、云端占位和保护名单保留",
+    "AI仅分析匿名摘要，生成清单；用户确认后移入废纸篓",
+    "删除前重新核验身份、修改时间和占用；历史可撤回"
+  ]
+}

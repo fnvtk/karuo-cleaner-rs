@@ -15,8 +15,8 @@ cat > "$APP_PATH/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>com.karuo.cleaner</string>
 <key>CFBundleExecutable</key><string>KaruoCleaner</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.4.11</string>
-<key>CFBundleVersion</key><string>23</string>
+<key>CFBundleShortVersionString</key><string>1.4.12</string>
+<key>CFBundleVersion</key><string>24</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleIconFile</key><string>AppIcon</string>
