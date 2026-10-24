@@ -365,15 +365,24 @@ pub fn scan_large_incremental(root:&Path,min_bytes:u64,older_days:Option<u64>,ca
     let mut published=Instant::now();
     let root = normalized_path(root);
     progress(format!("查找大型或旧文件：{}…", root.display()));
+    if cancel.load(Ordering::Relaxed){state.visit();return state.finish()}
     let Some(root_meta) = readable_directory(&root, &mut state) else {
         return state.finish();
     };
     let threshold =
         older_days.map(|days| now_seconds().saturating_sub(days.saturating_mul(DAY_SECONDS)));
     let mut queue=std::collections::VecDeque::new();
-    if let Ok(children)=fs::read_dir(&root){for child in children.flatten(){
-        if child.file_name()=="Volumes"{continue}
-        queue.push_back(WalkDir::new(child.path()).follow_links(false).same_file_system(true).into_iter());
+    if let Ok(children)=fs::read_dir(&root){for child in children{
+        if cancel.load(Ordering::Relaxed){state.visit();break}
+        let child=match child{Ok(child)=>child,Err(_)=>{state.result.skipped=state.result.skipped.saturating_add(1);continue}};
+        let path=child.path();
+        // Each WalkDir gets its own root device. Validate against the selected
+        // volume *before* opening that root, or autofs/mounted children can hang.
+        let metadata=match fs::symlink_metadata(&path){Ok(m)=>m,Err(_)=>{state.skipped(&path);continue}};
+        if metadata.file_type().is_symlink()||metadata.dev()!=root_meta.dev(){state.skipped(&path);continue}
+        if metadata.is_dir()&&is_package(&path){continue}
+        if (root==Path::new("/")||root==Path::new("/System/Volumes/Data"))&&child.file_name()=="Volumes"{continue}
+        queue.push_back(WalkDir::new(path).follow_links(false).follow_root_links(false).same_file_system(true).into_iter());
     }}
     while let Some(mut iter)=queue.pop_front(){
         let Some(item)=iter.next()else{continue};
@@ -813,6 +822,22 @@ mod tests {
         let result=scan_large(&root,1,None,&AtomicBool::new(false), |_|{});
         assert!(result.entries.iter().any(|e|e.name=="zz-large.bin"));
         let _=fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_symlink_at_queue_root_is_never_opened_or_traversed() {
+        use std::os::unix::fs::symlink;
+        let root=fixture();let outside=fixture();
+        write_file(&outside.join("must-not-read.bin"),30);
+        write_file(&root.join("inside.bin"),10);
+        symlink(&outside,root.join("linked-directory")).unwrap();
+        let result=scan_large(&root,1,None,&AtomicBool::new(false), |_|{});
+        assert_eq!(result.entries.len(),1);
+        assert_eq!(result.entries[0].name,"inside.bin");
+        assert_eq!(result.scanned,1);
+        assert_eq!(result.skipped,1);
+        fs::remove_dir_all(root).unwrap();fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]

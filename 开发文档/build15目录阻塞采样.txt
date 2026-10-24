@@ -1,0 +1,15 @@
+来源：macOS sample 19498 1，仅保留阻塞线程。非REA证据。
+    808 Thread_3993662
+    + 808 thread_start  (in libsystem_pthread.dylib) + 8  [0x194f5ccec]
+    +   808 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x194f61d00]
+    +     808 ???  (in KaruoCleaner)  load address 0x100168000 + 0x124420  [0x10028c420]
+    +       808 ???  (in KaruoCleaner)  load address 0x100168000 + 0xdbb70  [0x100243b70]
+    +         808 ???  (in KaruoCleaner)  load address 0x100168000 + 0x769e8  [0x1001de9e8]
+    +           808 ???  (in KaruoCleaner)  load address 0x100168000 + 0xbfbe4  [0x100227be4]
+    +             808 ???  (in KaruoCleaner)  load address 0x100168000 + 0x1563e0  [0x1002be3e0]
+    +               808 ???  (in KaruoCleaner)  load address 0x100168000 + 0x155a14  [0x1002bda14]
+    +                 808 ???  (in KaruoCleaner)  load address 0x100168000 + 0x155fd0  [0x1002bdfd0]
+    +                   808 ???  (in KaruoCleaner)  load address 0x100168000 + 0x11f038  [0x100287038]
+    +                     808 __opendir2  (in libsystem_c.dylib) + 44  [0x194e3c5f4]
+    +                       808 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x194f32024]
+    +                         808 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x194f1d93c]

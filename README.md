@@ -4,7 +4,7 @@
 
 文件越攒越多，却不知道该从哪里下手？卡若清理帮你找出占空间的文件。不知道能不能删，就直接问 AI。看懂清单，再决定要不要清理。
 
-[下载 Mac 版 · build 14](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.4.2/KaruoCleaner-1.4.2-build14-macos.zip)
+[下载 Mac 版 · build 15](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.4.3/KaruoCleaner-1.4.3-build15-macos.zip)
 
 ## ① 谁占空间多，一眼就看见
 

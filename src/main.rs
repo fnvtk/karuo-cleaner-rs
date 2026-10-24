@@ -114,20 +114,24 @@ fn show_apps(proxy: &EventLoopProxy<UiEvent>) {
     emit(proxy, json!({"event":"apps","apps":applications(),"startup_count":count}));
 }
 
+fn scan_error(proxy:&EventLoopProxy<UiEvent>,request:&Value,text:&str){
+    emit(proxy,json!({"event":"scan_error","module":request["module"].as_str().unwrap_or(if request["cmd"]=="space_start"{"space"}else{"smart"}),"request_id":request["request_id"],"text":text}));
+}
 fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>) {
-    if busy.load(Ordering::SeqCst) { message(&proxy, "正在处理文件，请稍候。", true); return; }
+    if busy.load(Ordering::SeqCst) { scan_error(&proxy,request,"正在处理文件；当前结果仍保留，完成后可重新扫描。"); return; }
     let module = request["module"].as_str().unwrap_or("smart").to_owned();
     if !["smart","junk","uninstall","space","large"].contains(&module.as_str()) { return; }
     let request_id = request["request_id"].as_u64().filter(|n|*n>0).unwrap_or_else(||generation.fetch_add(1,Ordering::SeqCst)+1);
     let min = request["min_mb"].as_u64().unwrap_or(100).clamp(1, 100_000) * 1_000_000;
     let days = if request["old_only"].as_bool().unwrap_or(false) { Some(90) } else { None };
-    let (root,token) = {let mut data=state.lock().unwrap();let root=if module=="large"{request["volume"].as_str().and_then(|id|data.volumes.iter().find(|v|v.id==id)).map(|v|PathBuf::from(&v.scan_root)).or_else(||data.roots.get(&module).cloned())}else{data.roots.get(&module).cloned()};let token=data.sessions.start(&module,request_id);(root,token)};
-    if ["space","large"].contains(&module.as_str())&&root.is_none(){message(&proxy,"请先选择硬盘或文件夹。",true);return;}
+    let root = {let data=state.lock().unwrap();if module=="large"{request["volume"].as_str().and_then(|id|data.volumes.iter().find(|v|v.id==id)).map(|v|PathBuf::from(&v.scan_root)).or_else(||data.roots.get(&module).cloned())}else{data.roots.get(&module).cloned()}};
+    if ["space","large"].contains(&module.as_str())&&root.is_none(){scan_error(&proxy,request,"请先选择硬盘或文件夹。已有结果已保留。");return;}
+    let token=state.lock().unwrap().sessions.start(&module,request_id);
     let root=root.map(|r|if r==Path::new("/")&&Path::new("/System/Volumes/Data").is_dir(){PathBuf::from("/System/Volumes/Data")}else{r});
     emit(&proxy,json!({"event":"scan_started","module":module,"request_id":request_id}));
     thread::spawn(move || {
-        let progress = |text: String| { if !state.lock().unwrap().sessions.current(&module,request_id){return}emit(&proxy, json!({"event":"progress","module":module,"text":text,"request_id":request_id})); };
-        let mut result: ScanResult = match module.as_str() {
+        let progress = |text: String| { let timing={let mut data=state.lock().unwrap();if !data.sessions.progress(&module,request_id,&text){return}let s=&data.sessions.items[&module];(s.started_at_ms,s.elapsed_ms)};emit(&proxy, json!({"event":"progress","module":module,"text":text,"request_id":request_id,"started_at_ms":timing.0,"elapsed_ms":timing.1})); };
+        let scan_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match module.as_str() {
             "smart" | "junk" => engine::scan_junk(&token, progress),
             "uninstall" => engine::scan_applications(&token, progress),
             "space" => engine::scan_space(root.as_ref().unwrap(), &token, progress),
@@ -138,7 +142,11 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
                 }
             }),
             _ => ScanResult::default(),
-        };
+        }));
+        let mut result=match scan_result {Ok(result)=>result,Err(_)=>{
+            let page={let mut data=state.lock().unwrap_or_else(|e|e.into_inner());if !data.sessions.fail(&module,request_id,"扫描器遇到异常，已保留现有结果。请重新扫描；没有修改文件。"){return}let _=data.sessions.save(&home().join("Library/Application Support/KaruoCleaner/scan-sessions.json"));data.sessions.page(&module,None)};
+            emit(&proxy,json!({"event":"result","module":module,"request_id":request_id,"data":page}));return;
+        }};
         result.entries.sort_by(|a, b| b.size.cmp(&a.size));
         if !state.lock().unwrap().sessions.current(&module,request_id) { return; }
         {
@@ -158,7 +166,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
 fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>) {
     let command = request["cmd"].as_str().unwrap_or("");
     if busy.load(Ordering::SeqCst) && !allowed_while_files_are_processing(command) {
-        message(&proxy, "正在处理文件，请等待完成后再操作。", true); return;
+        if ["scan","space_start"].contains(&command){scan_error(&proxy,&request,"正在处理文件；可以继续浏览已有结果，完成后再开始新扫描。")}else{message(&proxy, "正在处理文件，请等待完成后再操作。", true)}return;
     }
     match command {
         "rules_get" => emit(&proxy,json!({"event":"rules","scan":"只读，不设文件数量或总时长截断；权限失败与主动取消明确保留","cleanup":"后台扫描身份、真实路径、inode/device、大小、修改时间、打开占用重新核验；移入废纸篓可恢复","protected":["系统与Apple应用","运行中应用与本应用","用户保护名单","凭证与钥匙串","数据库与云占位","链接及共享数据"],"uninstall":"准确Bundle ID关联，AI审阅后逐项确认；应用数据与共享目录保留","schedule":"自动清理执行预算保留：50项、128MB；不处理个人文档与应用"})),
@@ -226,10 +234,10 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                 let mut data = state.lock().unwrap();
                 let volume = if let Some(path)=request["path"].as_str() {
                     let selected=PathBuf::from(path);
-                    if data.roots.get("space")!=Some(&selected){message(&proxy,"请先通过选择文件夹批准扫描目录。",true);return;}
+                    if data.roots.get("space")!=Some(&selected){scan_error(&proxy,&request,"请先通过选择文件夹批准扫描目录。已有结果已保留。");return;}
                     let root=if selected==Path::new("/")&&Path::new("/System/Volumes/Data").is_dir(){"/System/Volumes/Data".into()}else{selected.to_string_lossy().into_owned()};
                     space::Volume{id:path.into(),name:path.into(),mount:path.into(),scan_root:root,total:0,available:0,used:0,internal:false}
-                } else {let Some(volume)=data.volumes.iter().find(|v|v.id==id).cloned()else{message(&proxy,"请选择已挂载的硬盘。",true);return;};volume};
+                } else {let Some(volume)=data.volumes.iter().find(|v|v.id==id).cloned()else{scan_error(&proxy,&request,"请选择已挂载的硬盘。已有结果已保留。");return;};volume};
                 let token=data.sessions.start("space",request_id);
                 let cache = Arc::new(Mutex::new(space::Cache::default())); data.space_cache = cache.clone();
                 (volume,cache,token)
@@ -452,7 +460,7 @@ fn main() -> wry::Result<()> {
     let busy = Arc::new(AtomicBool::new(false));
     let generation = Arc::new(AtomicU64::new(0));
     let proxy = event_loop.create_proxy();
-    let hub=control::start(proxy.clone()).unwrap_or_else(|e|{eprintln!("本机API未启动：{e}");control::Hub::default()});
+    let hub=control::start(proxy.clone()).unwrap_or_else(|e|{eprintln!("本机API未启动，已停止此实例以避免窗口与接口状态分离：{e}");std::process::exit(1)});
     let ipc_proxy = proxy.clone();
     let webview = WebViewBuilder::new()
         .with_custom_protocol("karuo".into(), |_id, request| {
