@@ -4,7 +4,7 @@
 
 文件越攒越多，却不知道该从哪里下手？卡若清理帮你找出占空间的文件。不知道能不能删，就直接问 AI。看懂清单，再决定要不要清理。
 
-[下载 Mac 版 · build 21](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.4.9/KaruoCleaner-1.4.9-build21-macos.zip)
+[下载 Mac 版 · build 22](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.4.10/KaruoCleaner-1.4.10-build22-macos.zip)
 
 ## ① 谁占空间多，一眼就看见
 
@@ -68,4 +68,4 @@ AI 就在清理页面旁边。看着文件问，不用来回切页面，也不�
 
 当前安装包适用于 Apple 芯片的 Mac，系统需要 macOS 13 或更新版本。此版本尚未通过 Apple 公证，能否打开取决于电脑的安全设置。
 
-想了解构建方法或对接工具？请看 [开发说明](docs/开发说明.md) 和 [接口说明](API/README.md)。
+需要对接工具？请看 [接口说明](API/README.md)。

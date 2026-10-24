@@ -27,3 +27,10 @@
 *space-scan-state.json
 scan-state-*.json
 .space-write-*
+
+# 本地研发记录与临时探针不随GitHub源码分发
+/开发文档/
+/docs/开发说明.md
+/examples/
+/release-assets/
+/design-qa.md

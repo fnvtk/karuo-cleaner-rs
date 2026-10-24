@@ -62,6 +62,7 @@
     .space-check:disabled{opacity:.4}.space-row:has(.space-check:disabled) .space-row-name::after{content:' · 已保护';font-size:11px;color:#8b9a91}
 .progress-track:not([hidden]){display:block}.scan-status{color:#526b65}.toast.show strong,.toast.show span,.toast.show button{color:#fff!important}.toast.show strong{font-size:16px}.toast.show span{font-size:14px}.toast.show{border-color:transparent;box-shadow:0 6px 24px #182e3540}
   .protection-note,.protected-copy{color:#7b5c2e!important;font-size:12px;line-height:1.5}.protection-note{margin-top:4px}.entry-check:disabled{opacity:.45}
+    .guardian-settings{display:flex;flex-wrap:wrap;gap:10px;padding-bottom:18px;margin-bottom:18px;border-bottom:1px solid var(--line)}
   </style>
 </head>
 <body>
@@ -90,8 +91,7 @@
     <main class="main">
       <header class="topbar">
         <div class="crumb"><span>本机</span><span>›</span><strong id="crumb-title">智能扫描</strong></div>
-        <div class="top-actions"><button class="secondary-btn" id="ai-open">AI 设置</button><button class="secondary-btn" id="rules-open">处理规则</button>
-          <button class="secondary-btn" id="ignore-open">保护名单</button>
+        <div class="top-actions">
           <button class="secondary-btn" id="schedule-open">定时清理</button>
           <button class="icon-button" id="history-open" aria-label="清理历史" title="清理历史"><span data-icon="history"></span></button>
           <button class="secondary-btn" id="guardian-open">清理管家</button>
@@ -144,7 +144,7 @@
           </div>
           <div class="filter-bar"><select id="entry-category" aria-label="结果分类"><option value="all">所有分类</option><option value="cache">缓存</option><option value="log">日志</option><option value="application">应用</option><option value="file">其他文件</option></select><input id="entry-query" type="search" placeholder="筛选已扫描结果" aria-label="筛选已扫描结果"><span class="selection-note" id="selection-note"></span></div><div class="entry-list" id="entry-list"><div class="empty-state"><div class="empty-orb"><span data-icon="search"></span></div><strong>还没有扫描结果</strong><span>开始扫描后，候选文件会列在这里供你查看和选择。</span></div></div>
           <div class="entry-pagination" id="entry-pagination" hidden><button id="entry-page-prev" type="button" disabled>上一页</button><span id="entry-page-label">第 1 页</span><button id="entry-page-next" type="button" disabled>下一页</button></div>
-          <div class="results-foot"><span id="scan-foot">文件只读分析，处理前需要你的选择。</span><span class="result-notes" id="result-notes"></span></div>
+          <div class="results-foot" hidden><span id="scan-foot">文件只读分析，处理前需要你的选择。</span><span class="result-notes" id="result-notes"></span></div>
         </div>
         <div class="space-panel" id="space-panel">
           <div class="space-explorer-head"><div><div class="space-kicker">磁盘空间 · 只读分析</div><h2 class="space-title">文件夹占用</h2></div><div class="space-scan-summary" id="space-total">等待扫描</div></div>
@@ -195,6 +195,11 @@
     <section class="sheet">
       <div class="sheet-head"><div><h2 id="guardian-title">清理管家</h2><p>按你的习惯照看空间，重要文件先留住。</p></div><button class="secondary-btn" id="guardian-close">关闭</button></div>
       <div class="sheet-body">
+        <div class="guardian-settings" aria-label="管家设置">
+          <button class="secondary-btn" id="ai-open" data-guardian-setting>AI 设置</button>
+          <button class="secondary-btn" id="rules-open" data-guardian-setting>处理规则</button>
+          <button class="secondary-btn" id="ignore-open" data-guardian-setting>保护名单</button>
+        </div>
         <p id="guardian-binding">正在读取管家状态…</p>
         <p id="guardian-summary" style="white-space:pre-line;margin:20px 0"></p>
         <form id="guardian-form" class="schedule-form">
@@ -425,6 +430,7 @@
       function closeGuardian(){closeDialog('guardian-overlay');guardianFocus?.focus()}
       $('guardian-open').onclick=()=>{guardianFocus=document.activeElement;$('guardian-overlay').classList.add('visible');$('guardian-save').disabled=true;post('guardian_get');$('guardian-close').focus()};
       $('guardian-close').onclick=closeGuardian;
+      $('guardian-overlay').addEventListener('click',e=>{if(e.target.closest('[data-guardian-setting]'))closeGuardian()},true);
       $('guardian-overlay').onclick=e=>{if(e.target===$('guardian-overlay'))closeGuardian()};
       $('guardian-schedule').onclick=()=>{closeGuardian();openSchedule()};
       $('guardian-form').onsubmit=e=>{e.preventDefault();$('guardian-save').disabled=true;$('guardian-feedback').textContent='正在保存…';post('guardian_save',{preferences:{cache_days:Number($('guardian-cache-days').value),log_days:Number($('guardian-log-days').value),clean_cache:$('guardian-cache').checked,clean_logs:$('guardian-logs').checked}})};
