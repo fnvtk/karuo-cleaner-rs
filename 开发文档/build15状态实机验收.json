@@ -1,0 +1,23 @@
+{
+  "progress": {
+    "running": true,
+    "scanned": 13161,
+    "total": 10,
+    "elapsed_ms": 811,
+    "progress_text": "已检查 13161 项，找到 10 个大型文件…",
+    "started_at_ms": 1792808137605
+  },
+  "terminal": {
+    "done": true,
+    "running": false,
+    "outcome": "cancelled",
+    "scanned": 20844,
+    "total": 10,
+    "elapsed_ms": 822
+  },
+  "single_instance": {
+    "second_exit_code": 1,
+    "refused": true
+  },
+  "scope": "全部为只读扫描和取消；未移动用户文件"
+}
