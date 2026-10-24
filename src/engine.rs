@@ -70,6 +70,10 @@ impl<'a> ScanState<'a> {
 /// 搜索用户缓存中至少 7 天未修改的普通文件和至少 30 天未修改的旧日志。
 /// 浏览器、聊天、系统及本应用状态目录会从遍历中排除。
 pub fn scan_junk(cancel: &AtomicBool, progress: impl Fn(String)) -> ScanResult {
+    scan_junk_incremental(cancel,progress, |_|{})
+}
+pub fn scan_junk_incremental(cancel: &AtomicBool, progress: impl Fn(String), partial: impl Fn(&ScanResult)) -> ScanResult {
+    let mut published=Instant::now();
     let mut state = ScanState::new(cancel);
     let ignored = match crate::safety::load_ignored_paths() {
         Ok(paths) => paths,
@@ -144,7 +148,10 @@ pub fn scan_junk(cancel: &AtomicBool, progress: impl Fn(String)) -> ScanResult {
                     continue;
                 }
             };
-            if state.result.scanned % 512 == 0 { progress(format!("已检查 {} 项，找到 {} 个候选…", state.result.scanned, state.result.entries.len())); }
+            if published.elapsed()>=std::time::Duration::from_millis(500) {
+                progress(format!("已检查 {} 项，找到 {} 个候选…",state.result.scanned,state.result.entries.len()));
+                partial(&state.result);published=Instant::now();
+            }
             let path = item.path();
             if !path.starts_with(&root)
                 || item.file_type().is_symlink()

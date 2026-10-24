@@ -327,28 +327,17 @@ fn scan_bulk_macos(
 ) -> bool {
     use std::{
         ffi::OsStr,
-        os::unix::{ffi::OsStrExt, io::AsRawFd},
+        os::unix::ffi::OsStrExt,
     };
     const BUF_SIZE: usize = 8192;
     const ATTR_CMN_NAME: u32 = 0x0000_0001;
     const ATTR_CMN_DEVID: u32 = 0x0000_0002;
     const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
     const ATTR_CMN_FILEID: u32 = 0x0200_0000;
-    const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
     const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
     const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
     const VREG: u32 = 1;
     const VDIR: u32 = 2;
-    #[repr(C)]
-    struct AttrList {
-        bitmapcount: u16,
-        reserved: u16,
-        commonattr: u32,
-        volattr: u32,
-        dirattr: u32,
-        fileattr: u32,
-        forkattr: u32,
-    }
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct AttrSet {
@@ -358,58 +347,38 @@ fn scan_bulk_macos(
         fileattr: u32,
         forkattr: u32,
     }
-    unsafe extern "C" {
-        fn getattrlistbulk(
-            fd: libc::c_int,
-            list: *const AttrList,
-            buf: *mut libc::c_void,
-            size: usize,
-            options: u64,
-        ) -> libc::c_int;
-    }
     let mut stack = vec![root.to_path_buf()];
     let mut dirs = vec![root.to_path_buf()];
     let mut buf = [0u8; BUF_SIZE];
-    let attr_list = AttrList {
-        bitmapcount: 5,
-        reserved: 0,
-        commonattr: ATTR_CMN_RETURNED_ATTRS
-            | ATTR_CMN_NAME
-            | ATTR_CMN_DEVID
-            | ATTR_CMN_OBJTYPE
-            | ATTR_CMN_FILEID,
-        volattr: 0,
-        dirattr: 0,
-        fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE,
-        forkattr: 0,
-    };
+    let mut reader = None::<crate::read_worker::Reader>;
     let mut first_bulk_call = true;
     while let Some(dir) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let Ok(file) = fs::File::open(&dir) else {
-            *skipped += 1;
-            mark_incomplete(&mut cache.lock().unwrap(), &dir, root);
-            continue;
-        };
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                break;
+        if reader.is_none() {
+            match crate::read_worker::Reader::start() {
+                Ok(r)=>reader=Some(r),
+                Err(e)=>{cache.lock().unwrap().error=Some(format!("无法启动隔离读取：{e}"));*truncated=true;break;}
             }
-            let count = unsafe {
-                getattrlistbulk(
-                    file.as_raw_fd(),
-                    &attr_list,
-                    buf.as_mut_ptr().cast(),
-                    buf.len(),
-                    0,
-                )
+        }
+        if reader.as_mut().unwrap().open(&dir,root_dev).is_err() {
+            reader=None;*skipped+=1;mark_incomplete(&mut cache.lock().unwrap(),&dir,root);continue;
+        }
+        loop {
+            if cancel.load(Ordering::Relaxed) {break;}
+            let count=match reader.as_mut().unwrap().page(&mut buf,cancel) {
+                Ok(n)=>n,
+                Err(e)=>{
+                    reader=None;
+                    if !cancel.load(Ordering::Relaxed) {*skipped+=1;mark_incomplete(&mut cache.lock().unwrap(),&dir,root);eprintln!("目录读取未完成：{}：{e}",dir.display());}
+                    break;
+                }
             };
             let is_first_bulk_call = first_bulk_call;
             first_bulk_call = false;
             if count < 0 {
-                let code = std::io::Error::last_os_error().raw_os_error();
+                let code = Some(-count);
                 if is_first_bulk_call
                     && dir == root
                     && matches!(code, Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS))

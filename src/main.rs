@@ -1,4 +1,5 @@
 mod actions;
+mod read_worker;
 mod engine;
 mod model;
 mod selftest;
@@ -131,8 +132,12 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
     emit(&proxy,json!({"event":"scan_started","module":module,"request_id":request_id}));
     thread::spawn(move || {
         let progress = |text: String| { let timing={let mut data=state.lock().unwrap();if !data.sessions.progress(&module,request_id,&text){return}let s=&data.sessions.items[&module];(s.started_at_ms,s.elapsed_ms)};emit(&proxy, json!({"event":"progress","module":module,"text":text,"request_id":request_id,"started_at_ms":timing.0,"elapsed_ms":timing.1})); };
+        let partial = |partial: &ScanResult| {
+            let page={let mut d=state.lock().unwrap();if !d.sessions.current(&module,request_id){return}for entry in &partial.entries{if !d.sessions.items.get(&module).is_some_and(|s|s.removed.iter().any(|p|entry.path==*p||Path::new(&entry.path).starts_with(p))){d.approved.insert(entry.id.clone(),entry.clone());}}d.sessions.update(&module,request_id,partial.clone(),false);d.sessions.page(&module,None)};
+            emit(&proxy,json!({"event":"scan_partial","module":module,"request_id":request_id,"data":page}));
+        };
         let scan_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match module.as_str() {
-            "smart" | "junk" => engine::scan_junk(&token, progress),
+            "smart" | "junk" => engine::scan_junk_incremental(&token, progress, partial),
             "uninstall" => engine::scan_applications(&token, progress),
             "space" => engine::scan_space(root.as_ref().unwrap(), &token, progress),
             "large" => engine::scan_large_incremental(root.as_ref().unwrap(), min, days, &token, progress, |partial| {
@@ -431,6 +436,7 @@ mod busy_gate_tests {
 
 fn main() -> wry::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|v|v=="--directory-worker") {let _=read_worker::run();return Ok(());}
     if args.get(1).is_some_and(|v|v=="--api"){use std::io::Read;let raw=if args.get(2).is_some_and(|v|v=="-"){let mut b=String::new();std::io::stdin().read_to_string(&mut b).unwrap();b}else{args.get(2).cloned().unwrap_or_else(||"{}".into())};match serde_json::from_str::<Value>(&raw).map_err(|e|e.to_string()).and_then(|r|control::client(&r)){Ok(v)=>println!("{v}"),Err(e)=>{eprintln!("{e}");std::process::exit(1)}}return Ok(());}
 
     if args.get(1).is_some_and(|v|v=="--scheduled-run") {match schedule::run(){Ok(report)=>println!("{report}"),Err(e)=>{eprintln!("定时任务未执行：{e}");std::process::exit(1)}}return Ok(())}
