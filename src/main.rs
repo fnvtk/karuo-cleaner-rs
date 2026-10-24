@@ -101,6 +101,28 @@ fn ids(request: &Value) -> Vec<String> {
 
 fn exclusion_ids(request:&Value)->Vec<String>{request.get("selection").filter(|v|v.is_object()).unwrap_or(request)["exclude_ids"].as_array().map(|v|v.iter().filter_map(|x|x.as_str().map(str::to_owned)).collect()).unwrap_or_default()}
 
+/// AI上下文来自当前扫描，失败必须回到同一条对话，不退化成“分析全部”。
+fn chat_entries(request:&Value,state:&Arc<Mutex<State>>)->Result<Vec<Entry>,String>{
+    let module=request["module"].as_str().unwrap_or("smart");
+    if !["smart","junk","large","space","uninstall","optimize"].contains(&module){return Err("未知分析板块，请重新选择。".into())}
+    let chosen=ids(request);let query=request["query"].as_str().unwrap_or("");let category=request["category"].as_str().unwrap_or("all");
+    let d=state.lock().map_err(|_|"扫描状态暂不可用")?;
+    if let Some(id)=request["scan_request_id"].as_u64(){if d.sessions.items.get(module).map(|s|s.request_id)!=Some(id){return Err("扫描批次已变化，请在当前结果中重新提问。".into())}}
+    if module=="space" {
+        let cache=d.space_cache.clone();drop(d);
+        let (candidates,root)={let c=cache.lock().map_err(|_|"空间索引暂不可用")?;
+            if let Some(path)=request["path"].as_str(){if Path::new(path)!=c.current{return Err("当前目录已变化，请在新目录中重新提问。".into())}}
+            let selection=if chosen.is_empty(){Some((query,request["show_hidden"].as_bool().unwrap_or(false)))}else{None};
+            (c.cleanup_candidates_excluding(&chosen,selection,&exclusion_ids(request))?,c.root.clone())};
+        let entries:Vec<_>=candidates.into_iter().filter_map(|(p,dev,ino)|engine::make_entry(&p,"file",&root,"当前空间索引；AI只接收匿名统计").filter(|e|e.device==dev&&e.inode==ino)).collect();
+        Ok(entries)
+    } else {
+        let found:Vec<_>=d.sessions.selected_excluding(module,category,query,&exclusion_ids(request)).into_iter().filter(|e|chosen.is_empty()||chosen.contains(&e.id)).collect();
+        if !chosen.is_empty()&&chosen.iter().any(|id|!found.iter().any(|e|&e.id==id)){return Err("所选项目已不在当前结果或筛选中，请重新选择。".into())}
+        Ok(found)
+    }
+}
+
 fn applications() -> Vec<RunningApp> {
     let workspace = NSWorkspace::sharedWorkspace();
     workspace.runningApplications().iter().filter_map(|app| {
@@ -178,7 +200,17 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
     match command {
         "rules_get" => emit(&proxy,json!({"event":"rules","scan":"只读，不设文件数量或总时长截断；权限失败与主动取消明确保留","cleanup":"后台扫描身份、真实路径、inode/device、大小、修改时间、打开占用重新核验；移入废纸篓可恢复","protected":["系统与Apple应用","运行中应用与本应用","用户保护名单","凭证与钥匙串","数据库与云占位","链接及共享数据"],"uninstall":"准确Bundle ID关联，AI审阅后逐项确认；应用数据与共享目录保留","schedule":"自动清理执行预算保留：50项、128MB；不处理个人文档与应用"})),
         "session_get" | "scan_page" => {let module=request["module"].as_str().unwrap_or("smart");let mut d=state.lock().unwrap();if module=="space"{let d_running=d.sessions.jobs.get("space").is_some_and(|j|!j.token.load(Ordering::SeqCst));let cache=d.space_cache.clone();let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);drop(d);let view=cache.lock().unwrap().view();emit(&proxy,json!({"event":"session","module":"space","request_id":id,"scanning":d_running,"data":view}));}else{let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);let filter=if command=="scan_page"{Some((request["category"].as_str().unwrap_or("all"),request["query"].as_str().unwrap_or(""),request["page"].as_u64().unwrap_or(0)as usize))}else{None};let page=d.sessions.page(module,filter);emit(&proxy,json!({"event":if command=="scan_page"{"scan_page"}else{"session"},"module":module,"request_id":id,"scanning":page["running"],"data":page}));}},
-        "ai_chat" => {let module=request["module"].as_str().unwrap_or("smart").to_owned();let text=request["text"].as_str().unwrap_or("").to_owned();let history=request["history"].as_array().cloned().unwrap_or_default();let chosen=ids(&request);let query=request["query"].as_str().unwrap_or("").to_owned();let category=request["category"].as_str().unwrap_or("all").to_owned();let hidden=request["show_hidden"].as_bool().unwrap_or(false);thread::spawn(move||{let entries=if module=="space"{let cache=state.lock().unwrap().space_cache.clone();let (candidates,root)={let c=cache.lock().unwrap();let selection=if chosen.is_empty(){Some((query.as_str(),hidden))}else{None};match c.cleanup_candidates_excluding(&chosen,selection,&exclusion_ids(&request)){Ok(v)=>(v,c.root.clone()),Err(e)=>{message(&proxy,e,true);return}}};candidates.into_iter().filter_map(|(p,dev,ino)|engine::make_entry(&p,"file",&root,"当前空间索引；AI只接收匿名统计").filter(|e|e.device==dev&&e.inode==ino)).collect::<Vec<_>>()}else{let d=state.lock().unwrap();d.sessions.selected_excluding(&module,&category,&query,&exclusion_ids(&request)).into_iter().filter(|e|chosen.is_empty()||chosen.contains(&e.id)).collect()};emit(&proxy,analysis::chat(&entries,&module,&text,&history,json!({"scope":"indexed_candidates","count":entries.len()})));});},
+        "ai_chat" => {
+            let module=request["module"].as_str().unwrap_or("smart").to_owned();let request_id=request["chat_request_id"].clone();
+            thread::spawn(move||{
+                let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+                    let entries=chat_entries(&request,&state)?;
+                    Ok::<Value,String>(analysis::chat(&entries,&module,request["text"].as_str().unwrap_or(""),&request["history"].as_array().cloned().unwrap_or_default(),json!({"scope":"indexed_candidates","count":entries.len()})))
+                }));
+                let mut reply=match result{Ok(Ok(v))=>v,Ok(Err(e))=>json!({"event":"ai_chat","module":module,"source":"rules","reply":"未完成分析，没有执行清理。","error":e,"proposals":[]}),Err(_)=>json!({"event":"ai_chat","module":module,"source":"rules","reply":"分析遇到异常，请重新提问；没有执行清理。","error":"分析任务已结束","proposals":[]})};
+                reply["chat_request_id"]=request_id;emit(&proxy,reply);
+            });
+        },
         "ai_proposal_plan" => {let proposal=match analysis::proposal(request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};match proposal{analysis::Proposal::Cleanup(entries)=>{thread::spawn(move||match cleanup::build_entries(entries){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)});},analysis::Proposal::Uninstall(app)=>{match uninstall::build_plan(&app){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},analysis::Proposal::Schedule(config)=>emit(&proxy,json!({"event":"ai_schedule_proposal","config":config})),analysis::Proposal::Restore=>handle(json!({"cmd":"undo_last"}),state,proxy,generation,busy)}},
         "ai_get" => emit(&proxy,analysis::config_status()),
         "ai_save" => {let result=analysis::save_config(request["base_url"].as_str().unwrap_or(""),request["model"].as_str().unwrap_or(""),request["api_key"].as_str().unwrap_or(""));if let Err(e)=result{message(&proxy,e,true)}else{emit(&proxy,analysis::config_status())}},
@@ -528,4 +560,11 @@ fn main() -> wry::Result<()> {
             _ => {},
         }
     });
+}
+
+#[cfg(test)]mod ai_scope_tests{
+ use super::*;
+ fn state()->Arc<Mutex<State>>{Arc::new(Mutex::new(State{volumes:vec![],space_cache:Arc::new(Mutex::new(space::Cache::default())),approved:HashMap::new(),roots:HashMap::new(),allowed:vec![],sessions:sessions::Sessions::default(),last_moved:vec![]}))}
+ #[test]fn stale_ai_scan_and_selection_fail_before_model_request(){let s=state();let _t=s.lock().unwrap().sessions.start("junk",123);assert!(chat_entries(&json!({"module":"junk","scan_request_id":122}),&s).unwrap_err().contains("批次"));assert!(chat_entries(&json!({"module":"junk","scan_request_id":123,"ids":["missing"]}),&s).unwrap_err().contains("所选"));}
+ #[test]fn changed_space_directory_fails_before_disk_reads(){let s=state();assert!(chat_entries(&json!({"module":"space","path":"/old-directory","ids":["/old-directory/file"]}),&s).unwrap_err().contains("目录"));}
 }

@@ -75,7 +75,7 @@ fn proposals()-> &'static std::sync::Mutex<std::collections::HashMap<String,Prop
 pub fn proposal(id:&str)->Result<Proposal,String>{proposals().lock().map_err(|_|"建议暂不可用")?.get(id).cloned().ok_or("建议不存在或应用已重启，请重新对话".into())}
 fn retain_proposal(p:Proposal)->String{use std::io::Read;let mut b=[0u8;24];if fs::File::open("/dev/urandom").and_then(|mut f|f.read_exact(&mut b)).is_err(){return String::new()}let id=b.iter().map(|b|format!("{b:02x}")).collect::<String>();if let Ok(mut ps)=proposals().lock(){ps.insert(id.clone(),p);}id}
 fn local_role(e:&Entry)->(&'static str,bool,&'static str){
- let p=Path::new(&e.path);if safety::is_protected(p){return("受保护",false,"系统、用户保护或敏感目录，保留")}
+ let p=Path::new(&e.path);if let Some(reason)=safety::path_protection_reason(p){return("受保护",false,reason)}
  if e.kind=="application"{return("应用包",false,"卸载需要关联清单和明确确认")}
  if e.is_dir{return("文件夹",false,"先查看内部索引，再逐文件核对，不整体删除目录")}
  if e.kind=="cache"||e.kind=="log"{return(if e.kind=="cache"{"旧缓存"}else{"旧日志"},true,"已通过本机缓存日志筛选，仍复查占用与身份")}
@@ -90,6 +90,7 @@ fn redact_text(text:&str,entries:&[Entry])->String{
  // 聊天也不隐式上传输入的绝对路径或密钥；文件名自动上下文只用匿名编号。
  s.split_whitespace().map(|word|if word.contains("sk-"){"[已隐藏密钥]".to_string()}else if word.contains('/')||word.contains('\\'){"[已隐藏路径]".to_string()}else{word.to_owned()}).collect::<Vec<_>>().join(" ")
 }
+fn schedule_draft_reply(c:&crate::schedule::Config)->String{format!("已准备{} {:02}:{:02} 的{}草案，确认保存后才生效。",if c.frequency=="daily"{"每天"}else{"每周一"},c.hour,c.minute,if c.mode=="trash"{"保守清理"}else{"仅扫描"})}
 pub fn chat(entries:&[Entry],module:&str,text:&str,history:&[Value],_context:Value)->Value{
  let text=text.trim();if text.is_empty(){return json!({"event":"ai_chat","module":module,"source":"rules","reply":"你可以问：哪些适合清理？这些文件为什么占空间？或帮我安排每周扫描。","proposals":[]})}
  let ignored=safety::load_ignored_paths();
@@ -103,18 +104,20 @@ pub fn chat(entries:&[Entry],module:&str,text:&str,history:&[Value],_context:Val
  let v=fetch(&c,"/chat/completions",Some(&json!({"model":c.model,"messages":messages,"temperature":0.2,"max_tokens":900})))?;
  let content=v["choices"][0]["message"]["content"].as_str().ok_or("模型未返回对话")?;let clean=content.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();let parsed:Value=serde_json::from_str(clean).map_err(|_|"模型回复格式无效，请重试对话；没有执行操作")?;if !parsed.is_object()||parsed["reply"].as_str().is_none(){return Err("模型对话缺少说明".into())}Ok((parsed,v["usage"].clone()))})();
  match request{Err(error)=>json!({"event":"ai_chat","module":module,"source":"rules","reply":"AI暂未完成分析。你仍可查看本机清单、保护项目或撤回清理。","error":error,"proposals":[]}),Ok((v,usage))=>{
- let action=v["action"].as_str().unwrap_or("none");let mut actions=Vec::new();
+ let action=v["action"].as_str().unwrap_or("none");let mut actions=Vec::new();let mut reply=v["reply"].as_str().unwrap_or("").chars().take(650).collect::<String>();
  match action{
  "cleanup"=>{let chosen:Vec<Entry>=if v["scope"]=="recommended"{recommended}else{v["refs"].as_array().into_iter().flatten().filter_map(|r|r.as_str()?.strip_prefix('f')?.parse::<usize>().ok()).filter_map(|i|entries.get(i)).filter(|e|local_role(e).1&&!ignored.as_ref().map_or(true,|v|safety::matches_ignored(Path::new(&e.path),v))).cloned().collect()};if !chosen.is_empty(){let n=chosen.len();let bytes=chosen.iter().fold(0u64,|n,e|n.saturating_add(e.size));let id=retain_proposal(Proposal::Cleanup(chosen));if !id.is_empty(){actions.push(json!({"id":id,"title":format!("查看 {n} 项清理清单"),"kind":"cleanup","count":n,"bytes":bytes}))}}},
- "schedule"=>{let s=&v["schedule"];let config=crate::schedule::Config{enabled:true,frequency:if s["frequency"]=="daily"{"daily"}else{"weekly"}.into(),hour:s["hour"].as_u64().filter(|n|*n<24).unwrap_or(10)as u8,minute:s["minute"].as_u64().filter(|n|*n<60).unwrap_or(0)as u8,mode:if s["mode"]=="trash"{"trash"}else{"scan"}.into()};let id=retain_proposal(Proposal::Schedule(config));actions.push(json!({"id":id,"title":"填入定时清理设置","kind":"schedule"}));},
+ "schedule"=>{let s=&v["schedule"];let config=crate::schedule::Config{enabled:true,frequency:if s["frequency"]=="daily"{"daily"}else{"weekly"}.into(),hour:s["hour"].as_u64().filter(|n|*n<24).unwrap_or(10)as u8,minute:s["minute"].as_u64().filter(|n|*n<60).unwrap_or(0)as u8,mode:if s["mode"]=="trash"{"trash"}else{"scan"}.into()};reply=schedule_draft_reply(&config);let id=retain_proposal(Proposal::Schedule(config));actions.push(json!({"id":id,"title":"填入定时清理设置","kind":"schedule"}));},
  "restore"=>{let id=retain_proposal(Proposal::Restore);actions.push(json!({"id":id,"title":"撤回上次清理","kind":"restore"}));},
  "uninstall" if entries.len()==1&&entries[0].kind=="application"=>{let id=retain_proposal(Proposal::Uninstall(entries[0].clone()));actions.push(json!({"id":id,"title":"查看应用与关联残留","kind":"cleanup"}));},_=>{}}
- json!({"event":"ai_chat","module":module,"source":"ai","reply":v["reply"].as_str().unwrap_or("").chars().take(650).collect::<String>(),"proposals":actions,"usage":usage,"analyzed_count":entries.len(),"recommended_count":groups.values().map(|x|x.2).sum::<u64>(),"privacy":"匿名角色与统计；对话中的路径、已选文件名和密钥会隐藏"})}}
+ json!({"event":"ai_chat","module":module,"source":"ai","reply":reply,"proposals":actions,"usage":usage,"analyzed_count":entries.len(),"recommended_count":groups.values().map(|x|x.2).sum::<u64>(),"privacy":"匿名角色与统计；对话中的路径、已选文件名和密钥会隐藏"})}}
 }
 #[cfg(test)]mod chat_tests{
  use super::*;
  fn file(p:&str)->Entry{Entry{id:p.into(),path:p.into(),name:"owned-file.rlib".into(),kind:"file".into(),size:20,modified:Some(1),is_dir:false,scope_root:"/fixture".into(),device:1,inode:1,mtime_nsec:0,detail:String::new()}}
  #[test]fn chat_never_recommends_personal_or_protected_files(){assert!(!local_role(&file("/fixture/Documents/owned-file.rlib")).1);assert!(!local_role(&file("/System/target/debug/deps/owned-file.rlib")).1);assert!(local_role(&file("/fixture/project/target/debug/deps/owned-file.rlib")).1);}
  #[test]fn conversation_redacts_paths_keys_and_known_names(){let e=file("/fixture/project/target/debug/deps/owned-file.rlib");let r=redact_text("看看 owned-file.rlib /fixture/private/data sk-test-secret",&[e]);assert!(!r.contains("owned-file.rlib"));assert!(!r.contains("/fixture"));assert!(!r.contains("sk-test-secret"));}
+ #[test]fn sensitive_build_filename_is_never_recommended(){assert!(!local_role(&file("/fixture/project/target/debug/deps/credentials.rlib")).1);assert!(!local_role(&file("/fixture/project/target/debug/deps/passwords.rmeta")).1);}
+ #[test]fn schedule_reply_uses_real_weekday_and_mode(){let c=crate::schedule::Config{enabled:true,frequency:"weekly".into(),hour:10,minute:5,mode:"scan".into()};let r=schedule_draft_reply(&c);assert!(r.contains("每周一 10:05")&&r.contains("仅扫描")&&r.contains("确认保存"));}
  #[test]fn fabricated_ai_proposal_cannot_execute(){assert!(proposal("model-invented-path").is_err());}
 }
