@@ -32,5 +32,5 @@ pub fn start(proxy:EventLoopProxy<UiEvent>)->Result<Hub,String>{
 }
 pub fn client(request:&Value)->Result<Value,String>{
     if request["cmd"]=="capabilities"{return Ok(capabilities())}
-    let mut stream=UnixStream::connect(path()).map_err(|_|"本机应用未运行或接口尚未就绪，请先打开卡若清理")?;stream.set_read_timeout(Some(Duration::from_secs(75))).map_err(|_|"无法设置响应期限")?;let bytes=serde_json::to_vec(request).map_err(|_|"请求格式无效")?;stream.write_all(&bytes).and_then(|_|stream.write_all(b"\n")).map_err(|_|"无法发送本机请求")?;let mut response=String::new();BufReader::new(stream).read_line(&mut response).map_err(|_|"响应读取失败或超时，先查询状态不要盲目重试")?;serde_json::from_str(&response).map_err(|_|"接口响应格式无效".into())
+    let mut stream=UnixStream::connect(path()).map_err(|_|"本机应用未运行或接口尚未就绪，请先打开清空AI")?;stream.set_read_timeout(Some(Duration::from_secs(75))).map_err(|_|"无法设置响应期限")?;let bytes=serde_json::to_vec(request).map_err(|_|"请求格式无效")?;stream.write_all(&bytes).and_then(|_|stream.write_all(b"\n")).map_err(|_|"无法发送本机请求")?;let mut response=String::new();BufReader::new(stream).read_line(&mut response).map_err(|_|"响应读取失败或超时，先查询状态不要盲目重试")?;serde_json::from_str(&response).map_err(|_|"接口响应格式无效".into())
 }

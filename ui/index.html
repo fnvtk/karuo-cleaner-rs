@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>卡若清理</title>
+  <title>清空AI</title>
   <style>
     :root{color-scheme:light;--ink:#263743;--muted:#78878d;--soft:#a4afb1;--line:#e0e8e6;--paper:#f5f8f6;--surface:#fff;--teal:#5c9e91;--deep:#315d70;--mint:#e7f2ee;--shadow:0 14px 36px rgba(33,61,67,.07);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased}
     *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;color:var(--ink);background:var(--paper);font-size:15px}button,input,select{font:inherit}button{color:inherit}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #9bcabd;outline-offset:2px}[hidden]{display:none!important}
@@ -64,13 +64,15 @@
   .protection-note,.protected-copy{color:#7b5c2e!important;font-size:12px;line-height:1.5}.protection-note{margin-top:4px}.entry-check:disabled{opacity:.45}
     .guardian-settings{display:flex;flex-wrap:wrap;gap:10px;padding-bottom:18px;margin-bottom:18px;border-bottom:1px solid var(--line)}
   </style>
-</head>
-<body>
+<style>
+.smart-welcome{display:none}.smart-active .smart-welcome{display:block;text-align:center;padding:12px 20px}.smart-active .page-head{display:none}.smart-active .smart-welcome>img{height:180px;max-width:100%;object-fit:contain}.smart-welcome h1{font-size:32px;margin:0 0 8px}.smart-welcome p{margin:0;color:#62777a;font-size:17px}.smart-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:24px}.smart-card{background:#ffffffbc;border:1px solid #dce7e4;border-radius:22px;padding:16px;text-align:center}.smart-card img{width:96px;height:96px;object-fit:contain}.smart-card h2{font-size:20px;margin:6px}.smart-card p{font-size:15px;line-height:1.5;min-height:46px}.smart-card button{margin-top:12px}.smart-active .hero{margin-top:4px}.smart-active .hero-copy .hero-title,.smart-active .hero-copy .hero-desc,.smart-active .hero-kicker{display:none}.smart-active:not(.smart-details) #results-panel{display:none!important}.smart-back{display:none}.smart-active.smart-details .smart-welcome{display:none}.smart-active.smart-details .smart-back{display:inline-flex}.smart-active #scan-button-sub{display:none}@media(max-height:850px){.smart-active .smart-welcome>img{height:110px}.smart-cards{margin-top:14px}.smart-card img{height:70px;width:70px}.smart-card{padding:12px}}
+</style></head>
+<body class="smart-active">
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
         <div class="brandmark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 16.8c5.8-.1 10.2-3.6 13.2-10.5 1.1 7.9-1.4 13.2-7.3 14.2-2.5.4-4.6-.8-5.9-3.7Z" stroke="white" stroke-width="1.7" stroke-linejoin="round"/><path d="M5.4 19.3c2.6-3.8 5.7-6.6 9.5-8.7M17.9 4.2l.5-1.5m2 2 1.5-.5" stroke="white" stroke-width="1.5" stroke-linecap="round"/></svg></div>
-        <div><div class="brand-name">卡若清理</div><div class="brand-caption">KARUO · SYSTEM CARE</div></div>
+        <div><div class="brand-name">清空AI</div><div class="brand-caption">KARUO · SYSTEM CARE</div></div>
       </div>
       <nav class="nav" aria-label="清理工具">
         <div class="nav-group"><div class="nav-label">智能扫描</div><button class="nav-item active" data-module="smart"><span class="nav-icon" data-icon="spark"></span><span>智能扫描</span></button></div>
@@ -101,7 +103,7 @@
         <div class="page-head">
           <div><div class="eyebrow"><i class="eyebrow-mark"></i><span id="page-eyebrow">MAC 清理助手</span></div><h1 id="page-title">让 Mac 轻一点</h1><p class="subhead" id="page-subtitle">先扫描，再由你决定处理哪些项目。</p></div>
         </div>
-        <div class="scope-controls" id="scope-controls" hidden>
+        <section class="smart-welcome"><img src="karuo://assets/smart-hero.png" alt="清空AI 智能扫描"><h1>欢迎使用清空AI</h1><p>扫一扫，看看空间可以怎样变清爽。</p><div class="smart-cards"><article class="smart-card"><img src="karuo://assets/smart-clean.png" alt="清理"><h2>清理空间</h2><p>找出缓存和旧日志，按分类查看。</p><button class="secondary-btn" id="smart-details">查看扫描结果</button><button class="secondary-btn" id="smart-ai">AI 帮我分析</button></article><article class="smart-card"><img src="karuo://assets/smart-protect.png" alt="保护"><h2>保护重要资料</h2><p>重要文件留好，清理时遵守保护名单。</p><button class="secondary-btn" id="smart-protection">查看保护名单</button></article><article class="smart-card"><img src="karuo://assets/smart-files.png" alt="大文件"><h2>找出大文件</h2><p>按大小和时间，找到占空间的内容。</p><button class="secondary-btn" id="smart-large">查看大型和旧文件</button></article></div></section><button class="secondary-btn smart-back" id="smart-back">返回智能扫描</button><div class="scope-controls" id="scope-controls" hidden>
           <div class="scope-drive-icon" data-icon="drive"></div>
           <label class="scope-select-label" for="volume-select"><span id="scope-kind-label">扫描硬盘</span><select id="volume-select" aria-label="选择硬盘"></select></label>
           <div class="scope-capacity"><div id="scope-used-track" style="display:none;height:3px;background:#dce7e2;border-radius:9px;overflow:hidden"><i id="scope-used-fill" style="display:block;height:100%;background:#cf9677"></i></div><b id="volume-capacity">选择本机硬盘</b><span id="volume-usage">扫描整个磁盘，或选择一个大目录</span></div>
@@ -260,10 +262,11 @@
       };
       function svg(name,cls){const spec=icons[name]||icons.file;const el=document.createElementNS('http://www.w3.org/2000/svg','svg');el.setAttribute('viewBox','0 0 24 24');el.setAttribute('fill','none');el.setAttribute('stroke','currentColor');el.setAttribute('stroke-width','1.7');el.setAttribute('stroke-linecap','round');el.setAttribute('stroke-linejoin','round');el.setAttribute('aria-hidden','true');if(cls)el.setAttribute('class',cls);for(let i=0;i<spec.length;i+=2){const n=spec[i],node=document.createElementNS('http://www.w3.org/2000/svg',n);if(n==='circle'){const a=spec[i+1].split(' ');node.setAttribute('cx',a[0]);node.setAttribute('cy',a[1]);node.setAttribute('r',a[2])}else if(n==='rect'){const a=spec[i+1].split(' ');node.setAttribute('x',a[0]);node.setAttribute('y',a[1]);node.setAttribute('width',a[2]);node.setAttribute('height',a[3]);node.setAttribute('rx','2')}else node.setAttribute('d',spec[i+1]);el.appendChild(node)}return el}
       function mountIcons(){document.querySelectorAll('[data-icon]').forEach(el=>{const name=el.dataset.icon;el.replaceChildren(svg(name))})}
-      function post(cmd,payload={}){try{if(window.ipc&&typeof window.ipc.postMessage==='function'){window.ipc.postMessage(JSON.stringify({cmd,...payload}));return true}toast('本机服务未连接','请从卡若清理桌面应用中打开此页面。',true)}catch(e){toast('请求未发送','本机服务连接异常，请稍后重试。',true)}return false}
+      function post(cmd,payload={}){try{if(window.ipc&&typeof window.ipc.postMessage==='function'){window.ipc.postMessage(JSON.stringify({cmd,...payload}));return true}toast('本机服务未连接','请从清空AI桌面应用中打开此页面。',true)}catch(e){toast('请求未发送','本机服务连接异常，请稍后重试。',true)}return false}
 
       function fmtSize(value){const n=Number(value);if(!Number.isFinite(n)||n<0)return'--';if(n<1024)return`${Math.round(n)} B`;const units=['KB','MB','GB','TB'];let v=n/1024,i=0;while(v>=1024&&i<units.length-1){v/=1024;i++}return`${v>=100?Math.round(v):v>=10?v.toFixed(1):v.toFixed(2)} ${units[i]}`}
       function fmtDate(seconds){if(seconds==null)return'修改时间未知';const n=Number(seconds);if(!Number.isFinite(n))return'修改时间未知';try{return new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'short',day:'numeric'}).format(new Date(n*1000))}catch{return'修改时间未知'}}
+      $('smart-ai').onclick=()=>sendChat('请分析本次智能扫描结果，简洁汇总可清理、建议保留和需要我确认的项目，并给我下一步可执行的建议。');$('smart-details').onclick=()=>document.body.classList.add('smart-details');$('smart-back').onclick=()=>document.body.classList.remove('smart-details');$('smart-protection').onclick=()=>openIgnore();$('smart-large').onclick=()=>setModule('large');
       function postRoot(){state.pendingRoot=state.active;post('pick_root',{module:state.active})}
       function cancelScan(){state.cancelledRequestId=state.activeRequestId;if(state.scanning)post('cancel',{module:state.active});state.scanning=false;if(state.active==='space')state.spaceCancelled=true;state.requestId++;$('scan-button').classList.remove('running');$('scan-button').disabled=false;$('scan-button-label').textContent=moduleInfo[state.active].scan;$('scan-button-sub').textContent=state.active==='space'?'仅分析 · 不修改文件':'仅分析 · 不自动删除';$('progress-track').hidden=true;clearProgress();setStatus('已停止本次扫描','');if(state.active==='space')$('space-toolbar-status-text').textContent='已停止 · 可以浏览已读取目录';if(state.active==='large')$('result-meta').textContent=`已停止 · 保留 ${state.entries.length} 个已找到的文件`;renderEntries()}
       function setStatus(text,mode){$('status-text').textContent=text;$('scan-status').className='scan-status'+(mode?' '+mode:'');if($('space-toolbar-status-text'))$('space-toolbar-status-text').textContent=text}
@@ -274,7 +277,7 @@
       setInterval(()=>{if(!state.scanning)return;const label=progressLabel();setStatus(label,'scanning');if(state.active!=='space'){$('result-meta').textContent=label;const empty=$('entry-list').querySelector('.empty-state span');if(empty)empty.textContent=label}},1000)
       function setModule(module,autoScan=false){
         if(!moduleInfo[module])return;saveLocal();loadLocal(module);const info=moduleInfo[module],scoped=['space','large'].includes(module);
-        document.body.classList.toggle('space-active',module==='space');document.body.classList.remove('space-results');$('space-toolbar').hidden=true;$('workspace').insertBefore($('scope-controls'),$('scan-hero'));$('hero-action').appendChild($('scan-button'));
+        document.body.classList.toggle('smart-active',module==='smart');document.body.classList.remove('smart-details');document.body.classList.toggle('space-active',module==='space');document.body.classList.remove('space-results');$('space-toolbar').hidden=true;$('workspace').insertBefore($('scope-controls'),$('scan-hero'));$('hero-action').appendChild($('scan-button'));
         $('scope-controls').hidden=!scoped;$('pick-root').hidden=!scoped;$('space-intro-features').hidden=module!=='space';$('hero-art-wrap').hidden=module!=='space';
         document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.module===module));$('crumb-title').textContent=info.title;$('page-title').textContent=info.headline;$('page-subtitle').textContent=info.desc;$('hero-kicker').textContent=info.hint;$('hero-title').textContent=info.scan;$('hero-desc').textContent=info.desc;
         $('scan-button-label').textContent=state.scanning?'停止扫描':module==='space'?'扫描':module==='optimize'?'读取应用':state.data.done?'重新扫描':'开始扫描';$('scan-button').classList.toggle('running',state.scanning);

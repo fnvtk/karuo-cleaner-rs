@@ -19,8 +19,8 @@ pub fn allows(p:&Preferences,e:&crate::model::Entry,at:u64,restored:&[PathBuf])-
  let days=match e.kind.as_str(){"cache" if p.clean_cache=>p.cache_days,"log" if p.clean_logs=>p.log_days,_=>return false};
  e.modified.is_some_and(|m|at.saturating_sub(m)>=u64::from(days)*86400)
 }
-pub fn anonymous_context()->Value{match load(){Ok(p)=>json!({"name":"卡若清理管家","preferences":p,"recovered_avoidance":"恢复过的项目不再自动清理","authority":"只在已启用的定时授权内工作；习惯只收紧规则；网站尚未绑定"}),Err(e)=>json!({"error":e,"automatic_cleanup":"paused"})}}
-pub fn status(error:Option<String>)->Value{let config=load();let restored=recovered();let err=error.or_else(||config.as_ref().err().cloned()).or_else(||restored.as_ref().err().cloned());json!({"event":"guardian","name":"卡若清理管家","preferences":config.ok(),"recovered_count":restored.as_ref().map(|v|v.len()).unwrap_or(0),"schedule":schedule::status(None),"binding":{"status":"pending","reason":"BINDING_CREDENTIAL_REQUIRED","verified":false},"error":err})}
+pub fn anonymous_context()->Value{match load(){Ok(p)=>json!({"name":"清空AI管家","preferences":p,"recovered_avoidance":"恢复过的项目不再自动清理","authority":"只在已启用的定时授权内工作；习惯只收紧规则；网站尚未绑定"}),Err(e)=>json!({"error":e,"automatic_cleanup":"paused"})}}
+pub fn status(error:Option<String>)->Value{let config=load();let restored=recovered();let err=error.or_else(||config.as_ref().err().cloned()).or_else(||restored.as_ref().err().cloned());json!({"event":"guardian","name":"清空AI管家","preferences":config.ok(),"recovered_count":restored.as_ref().map(|v|v.len()).unwrap_or(0),"schedule":schedule::status(None),"binding":{"status":"pending","reason":"BINDING_CREDENTIAL_REQUIRED","verified":false},"error":err})}
 #[cfg(test)]mod tests{use super::*;
  fn item()->crate::model::Entry{crate::model::Entry{id:"test".into(),name:"test".into(),path:"/fixture/cache/item".into(),size:1,modified:Some(0),kind:"cache".into(),detail:String::new(),is_dir:false,scope_root:"/fixture".into(),inode:0,device:0,mtime_nsec:0}}
  #[test]fn preferences_cannot_weaken_retention(){let mut p=Preferences::default();p.cache_days=13;assert!(p.validate().is_err());p.cache_days=14;p.log_days=89;assert!(p.validate().is_err());}

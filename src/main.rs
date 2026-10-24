@@ -497,7 +497,7 @@ fn main() -> wry::Result<()> {
         std::process::exit(selftest::run());
     }
     let event_loop = EventLoopBuilder::<UiEvent>::with_user_event().build();
-    let window = WindowBuilder::new().with_title("卡若清理 · Rust")
+    let window = WindowBuilder::new().with_title("清空AI")
         .with_inner_size(LogicalSize::new(1180.0, 760.0))
         .with_min_inner_size(LogicalSize::new(960.0, 600.0)).build(&event_loop).expect("无法创建窗口");
     let mut allowed = vec![home().join("Library/Caches"), home().join("Library/Logs"), PathBuf::from("/Applications"), home().join("Applications")];
@@ -536,7 +536,7 @@ fn main() -> wry::Result<()> {
     let ipc_proxy = proxy.clone();
     let webview = WebViewBuilder::new()
         .with_custom_protocol("karuo".into(), |_id, request| {
-            let (status,bytes):(u16,&'static [u8])=if request.uri().path()=="/space-hero.png" {(200,include_bytes!("../Assets/space-hero.png"))}else{(404,b"")};
+            let (status,bytes):(u16,&'static [u8])=match request.uri().path() {"/space-hero.png" => (200,include_bytes!("../Assets/space-hero.png")), "/smart-hero.png" => (200,include_bytes!("../Assets/smart-hero.png")), "/smart-clean.png" => (200,include_bytes!("../Assets/smart-clean.png")), "/smart-protect.png" => (200,include_bytes!("../Assets/smart-protect.png")), "/smart-files.png" => (200,include_bytes!("../Assets/smart-files.png")), _ => (404,b"")};
             wry::http::Response::builder().status(status).header("Content-Type","image/png").body(std::borrow::Cow::Borrowed(bytes)).unwrap()
         })
         .with_html(include_str!("../ui/index.html"))
