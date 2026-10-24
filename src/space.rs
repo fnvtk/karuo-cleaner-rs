@@ -143,10 +143,11 @@ impl Cache {
             .map(|child|{let size=if child.is_dir{node_sizes.get(&self.current.join(&child.name)).map(|n|n.0).unwrap_or(0)}else{child.size};(child,size)}).collect();
         candidates.sort_by(|a,b|b.1.cmp(&a.1).then_with(||a.0.name.cmp(&b.0.name)));
         let item_total=candidates.len();let page_count=item_total.div_ceil(50).max(1);let page=page.min(page_count-1);self.page=page;
+        let ignored=crate::safety::load_ignored_paths();
         let entries:Vec<_>=candidates.into_iter().skip(page*50).take(50).map(|(child,size)|{
             let path=self.current.join(&child.name);
             let complete=child.is_dir&&self.done&&!scan_stopped&&!incomplete_dirs.contains(&path);
-            space_entry(&path,&self.root,size,child.is_dir,child.device,child.inode,!child.is_dir||size>0||complete,!child.is_dir||complete)
+            let mut value=space_entry(&path,&self.root,size,child.is_dir,child.device,child.inode,!child.is_dir||size>0||complete,!child.is_dir||complete);crate::safety::annotate_protection(&mut value,&ignored);value
         }).collect();
         let total = self.nodes.get(&self.current).map(|x| x.0).unwrap_or(0);
         let complete =
@@ -645,8 +646,8 @@ fn space_entry(
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let lower=name.to_lowercase();let protected=crate::safety::is_protected(path)||[".key",".pem",".p12",".pfx",".sqlite",".sqlite3",".db",".keychain"].iter().any(|x|lower.ends_with(x))||["credential","password"].iter().any(|x|lower.contains(x));
-    serde_json::json!({"id":p,"name":name,"path":p,"size":size,"modified":null,"protected":protected,
+    let reason=crate::safety::path_protection_reason(path);let protected=reason.is_some();
+    serde_json::json!({"id":p,"name":name,"path":p,"size":size,"modified":null,"protected":protected,"protection_reason":reason,
         "kind":if is_dir {"space_folder"} else {"space_file"},
         "detail":"已分配空间；目录汇总将在扫描完成后确认","is_dir":is_dir,
         "scope_root":root.to_string_lossy(),"inode":inode,"device":device,"mtime_nsec":0,"measured":measured,"complete":complete})

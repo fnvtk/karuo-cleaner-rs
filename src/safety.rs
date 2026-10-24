@@ -60,14 +60,37 @@ pub fn is_protected(path: &Path) -> bool {
     p.components().any(|c| matches!(c.as_os_str().to_str(), Some(".Trash" | ".Trashes" | ".ssh" | ".gnupg" | ".git" | "node_modules" | "CloudStorage" | "Mobile Documents")) || c.as_os_str().to_string_lossy().ends_with(".photoslibrary"))
 }
 
+/// 廉价、统一的列表保护解释；不打开文件或触发云端下载。
+/// 这不是删除授权：执行时仍必须复查元数据、身份、占用和名单。
+pub fn path_protection_reason(path:&Path)->Option<&'static str>{
+    let name=path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+    if [".db",".sqlite",".sqlite3",".db-wal",".db-shm","-wal","-shm"].iter().any(|s|name.ends_with(s)) {
+        return Some("数据库或运行数据，请通过所属应用管理");
+    }
+    if [".keychain",".keychain-db",".pem",".key",".p12",".pfx"].iter().any(|s|name.ends_with(s))||name.contains("credential")||name.contains("password") {
+        return Some("密钥、凭证或密码资料，已保护");
+    }
+    if name.ends_with(".icloud"){return Some("云端占位文件，已保护")}
+    if is_protected(path){return Some("系统、应用资料、云盘或项目目录，已保护")}
+    None
+}
+pub fn selection_protection_reason(path:&Path,ignored:&[PathBuf])->Option<&'static str>{
+    if matches_ignored(path,ignored){Some("已加入保护名单，此路径及内部项目保留")}
+    else{path_protection_reason(path)}
+}
+pub fn annotate_protection(value:&mut serde_json::Value,ignored:&Result<Vec<PathBuf>,String>){
+    let path=Path::new(value["path"].as_str().unwrap_or(""));
+    let reason=match ignored{Ok(paths)=>selection_protection_reason(path,paths),Err(_)=>Some("保护名单暂时无法读取，暂不可选择")};
+    value["protected"]=serde_json::json!(reason.is_some());
+    value["protection_reason"]=serde_json::json!(reason);
+}
+
 /// 不读取文件内容，不触发云端下载。数据库/链接/云端占位不作为自动垃圾候选。
 pub fn junk_metadata_safe(path: &Path, metadata: &fs::Metadata) -> bool {
-    let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
     metadata.is_file() && !metadata.file_type().is_symlink() && metadata.nlink() == 1
         && metadata.uid() == unsafe { libc::geteuid() }
         && metadata.st_flags() & (0x4000_0000 | 0x0000_0002 | 0x0000_0004 | 0x0002_0000 | 0x0004_0000) == 0
-        && !is_protected(path)
-        && ![".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", "-wal", "-shm", ".icloud", ".keychain", ".keychain-db", ".pem", ".key", ".p12"].iter().any(|s| name.ends_with(s))
+        && path_protection_reason(path).is_none()
 }
 
 /// 定时清理与手动缓存清理共用：真实 HOME 白名单、年龄和扫描身份再次核验。
@@ -166,4 +189,22 @@ mod tests {
         assert!(is_protected(&h.join("Library/CloudStorage/cloud/file")));
         assert!(!is_protected(&h.join("Library/Caches/example/old.cache")));
     }
+}
+
+#[cfg(test)]mod presentation_tests{
+ use super::*;
+ #[test]fn protected_types_share_presentation_and_cleanup_rules(){
+  for name in ["data.sqlite","data.sqlite-wal","identity.pfx","private.pem","passwords.txt","file.icloud"]{
+   let p=Path::new("/tmp").join(name);assert!(path_protection_reason(&p).is_some(),"{name}");
+  }
+  assert!(path_protection_reason(Path::new("/System/Volumes/Data/private/var/file")).is_some());
+  assert!(path_protection_reason(Path::new("/tmp/ordinary.log")).is_none());
+ }
+ #[test]fn user_protection_is_component_bounded_and_fail_closed(){
+  let paths=vec![PathBuf::from("/tmp/project")];
+  assert!(selection_protection_reason(Path::new("/tmp/project/file"),&paths).is_some());
+  assert!(selection_protection_reason(Path::new("/tmp/project2/file"),&paths).is_none());
+  let mut v=serde_json::json!({"path":"/tmp/ordinary.log"});annotate_protection(&mut v,&Err("broken".into()));
+  assert_eq!(v["protected"],true);assert!(v["protection_reason"].as_str().unwrap().contains("无法读取"));
+ }
 }

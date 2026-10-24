@@ -289,8 +289,9 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             emit(&proxy, json!({"event":"root","module":module,"path":root}));
         },
         "move" => {
+            let ignored=match safety::load_ignored_paths(){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};
             let mut selected=ids(&request);
-            let entries:Vec<_>={let data=state.lock().unwrap();if request["selection"].is_object(){let entries=data.sessions.selected(request["module"].as_str().unwrap_or(""),request["selection"]["category"].as_str().unwrap_or("all"),request["selection"]["query"].as_str().unwrap_or(""));selected=entries.iter().map(|e|e.id.clone()).collect();entries}else{selected.iter().filter_map(|id|data.approved.get(id).cloned()).collect()}};
+            let entries:Vec<_>={let data=state.lock().unwrap();if request["selection"].is_object(){let entries=data.sessions.selected(request["module"].as_str().unwrap_or(""),request["selection"]["category"].as_str().unwrap_or("all"),request["selection"]["query"].as_str().unwrap_or(""));let entries:Vec<_>=entries.into_iter().filter(|e|safety::selection_protection_reason(Path::new(&e.path),&ignored).is_none()).collect();selected=entries.iter().map(|e|e.id.clone()).collect();entries}else{selected.iter().filter_map(|id|data.approved.get(id).cloned()).collect()}};
             if let Ok(bytes)=serde_json::to_vec(&state.lock().unwrap().allowed){let _=fs::create_dir_all(saved_roots().parent().unwrap());let _=fs::write(saved_roots(),bytes);}
             if entries.is_empty() || entries.len() != selected.len() { message(&proxy, "选择已失效，请重新扫描。", true); return; }
             if entries.iter().any(|e| e.kind == "folder" || e.kind.starts_with("space_")) {

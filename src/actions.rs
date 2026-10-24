@@ -697,6 +697,15 @@ mod safety_tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn protected_pfx_is_refused_and_ordinary_file_remains_eligible() {
+        let root=fixture();let path=root.join("identity.pfx");fs::write(&path,b"fixture-only").unwrap();
+        let service=TrashService::new(vec![root.clone()],root.join("history.json"));
+        let entry=crate::engine::make_entry(&path,"file",&root,"test").unwrap();
+        let report=service.move_entries(&[entry]);assert!(report.records.is_empty());assert!(!report.failures.is_empty());assert_eq!(fs::read(&path).unwrap(),b"fixture-only");
+        let normal=root.join("ordinary.txt");fs::write(&normal,b"keep").unwrap();let e=crate::engine::make_entry(&normal,"file",&root,"test").unwrap();assert!(service.validate_entry(&e,&normal).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn changed_file_snapshot_is_rejected_without_moving() {
         let root=fixture();let path=root.join("ordinary.txt");fs::write(&path,b"before").unwrap();
         let service=TrashService::new(vec![root.clone()],root.join("history.json"));
