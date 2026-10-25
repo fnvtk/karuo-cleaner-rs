@@ -19,7 +19,7 @@ pub fn start(state:Arc<Mutex<State>>,proxy:EventLoopProxy<UiEvent>,busy:Arc<Atom
  let mut ai_advice=String::new();let mut ai_source="rules";
  if !entries.is_empty()&&analysis::config_status()["configured"]==true {
  publish(&proxy,json!({"event":"smart_clean","phase":"ai","running":true,"total":entries.len(),"elapsed_ms":started.elapsed().as_millis() as u64}));
- let review=analysis::chat(&entries,"smart","请审核这些本机已验证的旧缓存和旧日志，安全时生成cleanup清单且scope=recommended。重要资料保留；用一句话说明。",&[],json!({}));
+ let target=space_goal::context();let prompt=format!("目标保持{}%可用空间，当前可用{}字节，还差{}字节。请审核本机已验证的旧缓存旧日志，安全时返回cleanup且scope=recommended。安全候选不足必须说明，不删除普通资料，不假称达到目标。",target["percent"],target["available_bytes"],target["shortfall_bytes"]);let review=analysis::chat(&entries,"smart",&prompt,&[],json!({"space_goal":target,"goal_analysis":true}));
  if review["source"]=="ai" {ai_source="ai";ai_advice=review["reply"].as_str().unwrap_or("").chars().take(100).collect();let selected=review["proposals"].as_array().into_iter().flatten().find(|p|p["kind"]=="cleanup").and_then(|p|p["id"].as_str()).and_then(|id|analysis::proposal(id).ok());match selected {Some(analysis::Proposal::Cleanup(chosen))=>entries.retain(|e|chosen.iter().any(|c|c.id==e.id)),_=>entries.clear()}}
  else {ai_advice="AI暂不可用，已采用本机保护规则。".into()}
  }

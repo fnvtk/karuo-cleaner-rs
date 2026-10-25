@@ -4,7 +4,7 @@
 
 点一下「整理空间」，毕方AI在首页完成扫描、安全审核和整理。看着进度前进，结束后直接看到整理体积、耗时和空间变化。重要资料保留，整理还能撤回。
 
-[下载毕方AI · Mac 版](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.7.0/BifangAI-1.7.0-macos.zip)
+[下载毕方AI · Mac 版](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.8.0/BifangAI-1.8.0-macos.zip)
 
 名字取自《山海经·西山经》的毕方。先找出占空间的内容，再让 AI 帮你看清该留什么。
 

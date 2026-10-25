@@ -1,6 +1,6 @@
 {
-  "version": "2026-10-25.1",
-  "source": "本项目安全规则；当前Runtime授权资料中未找到电脑清理经验",
+  "version": "2026-10-25.2",
+  "source": "MOLE清理对话实证与本项目安全规则；不继承其他对话的删除授权",
   "cache_review_days": 7,
   "log_review_days": 30,
   "cache_vendor_review": [
@@ -44,5 +44,28 @@
     "~/.cargo/registry/cache"
   ],
   "automatic_scope": "定时清理仅旧用户缓存和日志，不包含近期缓存或开发下载缓存",
-  "developer_cache_requires_review": true
+  "developer_cache_requires_review": true,
+  "mole_experience": {
+    "tier_order": [
+      "旧缓存与日志",
+      "过期工具下载缓存（手动确认）",
+      "项目构建缓存（选定项目并确认空闲）",
+      "旧备份（核实用途、版本与引用）"
+    ],
+    "temporary_downloads": {
+      "npx_min_days": 30,
+      "preserve_project_node_modules": true,
+      "require_idle": true
+    },
+    "project_builds": "Next.js只审阅.next/cache，保留运行文件；Rust遵守项目维护脚本。没有项目授权与空闲证据不清理。",
+    "retention": "按同项目、同来源、同用途保留一份有效回退件；不将唯一源码、数据库、独立任务证据按年龄删除。",
+    "measurement": "文件整理量、工具内部回收量与同一挂载点的实际可用空间变化分别展示。",
+    "preserve": [
+      "运行中的项目",
+      "Docker数据卷与Docker.raw",
+      "Time Machine快照",
+      "发布及验收引用",
+      "凭证与数据库"
+    ]
+  }
 }

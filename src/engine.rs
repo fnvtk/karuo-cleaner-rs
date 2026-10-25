@@ -100,6 +100,7 @@ pub fn scan_junk_incremental(cancel: &AtomicBool, progress: impl Fn(String), par
             "log",
             "旧日志；普通文件且至少 30 天未修改",
         ),
+        (home.join(".npm/_npx"),30_u64,"developer_cache","npx过期临时下载缓存；至少30天未修改，需确认并排除使用中任务"),
         (home.join(".npm/_cacache"),7_u64,"developer_cache","npm下载缓存；至少7天未修改，可重新下载"),
         (home.join(".cargo/registry/cache"),7_u64,"developer_cache","Rust下载缓存；至少7天未修改，离线构建可能需要重新下载"),
     ];
@@ -127,6 +128,7 @@ pub fn scan_junk_incremental(cancel: &AtomicBool, progress: impl Fn(String), par
                     return false;
                 }
                 let path = entry.path();
+                if root==home.join(".npm/_npx")&&!crate::safety::npx_package_old(path){return false}
                 if !path.starts_with(&root) || protected_junk_path(path, &root) || crate::safety::matches_ignored(path, &ignored) {
                     return false;
                 }

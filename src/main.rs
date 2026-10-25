@@ -15,6 +15,8 @@ mod uninstall;
 mod cleanup;
 mod smart_flow;
 mod release_confirm;
+mod edit_menu;
+mod space_goal;
 
 use actions::TrashService;
 use model::{Entry, ScanResult, TrashRecord};
@@ -200,7 +202,9 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
         if ["scan","space_start"].contains(&command){scan_error(&proxy,&request,"正在处理文件；可以继续浏览已有结果，完成后再开始新扫描。")}else{message(&proxy, "正在处理文件，请等待完成后再操作。", true)}return;
     }
     match command {
-        "space_goal_get" | "space_goal_save" => {let error=if command=="space_goal_save"{request["percent"].as_u64().and_then(|p|u8::try_from(p).ok()).ok_or("目标无效".to_owned()).and_then(guardian::save_goal).err()}else{None};emit(&proxy,json!({"event":"space_goal","percent":guardian::goal().map(|g|g.percent).unwrap_or(10),"error":error}));},
+        "goal_analyze" => space_goal::start(proxy),
+        "goal_analysis_status" => space_goal::status(&proxy),
+        "space_goal_get" | "space_goal_save" => {let error=if command=="space_goal_save"{request["percent"].as_u64().and_then(|p|u8::try_from(p).ok()).ok_or("目标无效".to_owned()).and_then(guardian::save_goal).err()}else{None};emit(&proxy,json!({"event":"space_goal","percent":guardian::goal().map(|g|g.percent).unwrap_or(10),"error":error}));if command=="space_goal_save"&&error.is_none()&&request["analyze"]==true{space_goal::start(proxy)}},
         "purge_preview" => {let selected=ids(&request);let chosen:Vec<_>=service(&state).history().into_iter().filter(|r|!r.restored&&selected.contains(&r.id)).collect();if chosen.is_empty()||chosen.len()!=selected.len(){message(&proxy,"记录已变化，请重新选择。",true);return}match release_confirm::issue(&selected){Ok(token)=>emit(&proxy,json!({"event":"purge_preview","token":token,"ids":selected,"count":chosen.len(),"bytes":chosen.iter().map(|r|r.size).sum::<u64>(),"smart_flow":request["smart_flow"]==true})),Err(e)=>message(&proxy,e,true)}},
         "smart_clean" => smart_flow::start(state,proxy,busy),
         "smart_clean_status" => smart_flow::status(&proxy),
@@ -438,7 +442,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
 /// 磁盘写入期间仍保持界面可读、可导航。文件清理/扫描等待；本机设置和启动项调整可继续使用。
 fn allowed_while_files_are_processing(command: &str) -> bool {
     matches!(command,
-        "space_goal_get" | "space_goal_save" | "smart_clean_status" | "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
+        "goal_analyze" | "goal_analysis_status" | "space_goal_get" | "space_goal_save" | "smart_clean_status" | "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
         "ignore_get" | "schedule_get" | "guardian_get" | "ai_get" | "rules_get" |
         "optimize" | "startup_get" | "login_settings" | "reveal" | "ai_chat" |
         "ai_analyze" | "ai_models" | "uninstall_plan" | "uninstall_analyze" |
@@ -509,7 +513,7 @@ fn main() -> wry::Result<()> {
     let window = WindowBuilder::new().with_title("毕方AI")
         .with_inner_size(LogicalSize::new(1180.0, 760.0))
         .with_min_inner_size(LogicalSize::new(960.0, 600.0)).build(&event_loop).expect("无法创建窗口");
-    let mut allowed = vec![home().join(".npm/_cacache"),home().join(".cargo/registry/cache"),home().join("Library/Caches"), home().join("Library/Logs"), PathBuf::from("/Applications"), home().join("Applications")];
+    let mut allowed = vec![home().join(".npm/_npx"),home().join(".npm/_cacache"),home().join(".cargo/registry/cache"),home().join("Library/Caches"), home().join("Library/Logs"), PathBuf::from("/Applications"), home().join("Applications")];
     if let Ok(bytes) = fs::read(saved_roots()) {
         if let Ok(roots) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) {
             for root in roots {
@@ -542,6 +546,7 @@ fn main() -> wry::Result<()> {
         });
     }
     if let Some(error)=session_load_error{message(&proxy,format!("扫描快照未恢复：{error}。原文件已保留。"),true);}
+    edit_menu::install();
     let ipc_proxy = proxy.clone();
     let webview = WebViewBuilder::new()
         .with_custom_protocol("karuo".into(), |_id, request| {

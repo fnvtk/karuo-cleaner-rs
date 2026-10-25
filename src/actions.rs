@@ -94,6 +94,8 @@ impl TrashService {
             return report;
         }
 
+        let npx=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".npm/_npx");
+        let npx_idle=if entries.iter().any(|e|Path::new(&e.path).starts_with(&npx)){crate::safety::ensure_npx_idle()}else{Ok(())};
         // 先逐项核验，再一次性持久化整批恢复意图。旧实现每移动一个文件就
         // 读写并 fsync 整份历史；大批量时会退化为 O(n²) 的磁盘写入。
         // 所有意图先落盘后才移动，进程中断仍可按 inode/device 从废纸篓找回。
@@ -109,6 +111,7 @@ impl TrashService {
         for (index,entry) in entries.iter().enumerate() {
             progress(index,entries.len(),0,"check");
             let source = PathBuf::from(&entry.path);
+            if source.starts_with(&npx){if let Err(e)=&npx_idle{report.failures.push(e.clone());continue}}
             let snapshot = match self.validate_entry_with_open_check(entry, &source,false) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {

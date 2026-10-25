@@ -57,7 +57,8 @@ pub fn is_protected(path: &Path) -> bool {
         let library = h.join("Library");
         if p.starts_with(&library) && !p.starts_with(library.join("Caches")) && !p.starts_with(library.join("Logs")) { return true; }
     }
-    p.components().any(|c| matches!(c.as_os_str().to_str(), Some(".Trash" | ".Trashes" | ".ssh" | ".gnupg" | ".git" | "node_modules" | "CloudStorage" | "Mobile Documents")) || c.as_os_str().to_string_lossy().ends_with(".photoslibrary"))
+    let npx=home().is_some_and(|h|p.starts_with(data_alias(&h.join(".npm/_npx"))));
+    p.components().any(|c| matches!(c.as_os_str().to_str(), Some(".Trash" | ".Trashes" | ".ssh" | ".gnupg" | ".git" | "CloudStorage" | "Mobile Documents")) || c.as_os_str()=="node_modules"&&!npx || c.as_os_str().to_string_lossy().ends_with(".photoslibrary"))
 }
 
 /// 廉价、统一的列表保护解释；不打开文件或触发云端下载。
@@ -98,8 +99,8 @@ pub fn junk_metadata_safe(path: &Path, metadata: &fs::Metadata) -> bool {
 pub fn validate_junk_entry(entry: &Entry) -> Result<(), String> {
     let h = home().ok_or("无法确定用户目录")?;
     let (root, days) = match entry.kind.as_str() { "cache" => (h.join("Library/Caches"), 7), "log" => (h.join("Library/Logs"), 30), "recent_cache" => (h.join("Library/Caches"),1), "developer_cache" => {
-        let allowed=[h.join(".npm/_cacache"),h.join(".cargo/registry/cache")];
-        let root=allowed.into_iter().find(|root|Path::new(&entry.path).starts_with(root)&&Path::new(&entry.path)!=root).ok_or("不在开发缓存白名单内")?;(root,7)
+        let allowed=[h.join(".npm/_npx"),h.join(".npm/_cacache"),h.join(".cargo/registry/cache")];
+        let root=allowed.into_iter().find(|root|Path::new(&entry.path).starts_with(root)&&Path::new(&entry.path)!=root).ok_or("不在开发缓存白名单内")?;let days=if root==h.join(".npm/_npx"){if !npx_package_old(Path::new(&entry.path)){return Err("npx临时包近期使用或来源不明，保留".into())}30}else{7};(root,days)
     }, _ => return Err("自动清理仅允许旧缓存与旧日志".into()) };
     let p = Path::new(&entry.path);
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
@@ -211,3 +212,10 @@ mod tests {
   assert_eq!(v["protected"],true);assert!(v["protection_reason"].as_str().unwrap().contains("无法读取"));
  }
 }
+
+/// npx packages can be loaded lazily; an open-file check alone is insufficient.
+pub fn ensure_npx_idle()->Result<(),String>{let out=std::process::Command::new("/bin/ps").args(["-axo","comm="]).output().map_err(|_|"无法核实工具任务，保留npx缓存")?;if !out.status.success(){return Err("无法核实工具任务，保留npx缓存".into())}if download_task_running(&String::from_utf8_lossy(&out.stdout)){return Err("Node或包管理任务仍在运行，保留npx缓存".into())}Ok(())}
+fn download_task_running(list:&str)->bool{list.lines().any(|line|matches!(std::path::Path::new(line.trim()).file_name().and_then(|n|n.to_str()),Some("node"|"nodejs"|"npm"|"npx"|"pnpm"|"yarn"|"bun")))}
+#[cfg(test)]mod download_tests{use super::*;#[test]fn running_tool_names_are_exact(){assert!(download_task_running("/opt/homebrew/bin/node\n/bin/zsh"));assert!(download_task_running("npm"));assert!(!download_task_running("/Applications/Node Editor.app/Contents/MacOS/Node Editor\n/bin/zsh"));}}
+
+pub fn npx_package_old(path:&Path)->bool{let Some(h)=home()else{return false};let root=h.join(".npm/_npx");let Ok(relative)=path.strip_prefix(&root)else{return false};let Some(component)=relative.components().next()else{return false};let package=root.join(component.as_os_str());let Ok(m)=fs::symlink_metadata(&package)else{return false};let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();m.is_dir()&&!m.file_type().is_symlink()&&m.uid()==unsafe{libc::geteuid()}&&m.mtime()>=0&&(m.mtime()as u64)<=now.saturating_sub(30*86400)}
