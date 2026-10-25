@@ -43,5 +43,6 @@
     "~/.npm/_cacache",
     "~/.cargo/registry/cache"
   ],
-  "automatic_scope": "定时清理仅旧用户缓存和日志，不包含近期缓存或开发下载缓存"
+  "automatic_scope": "定时清理仅旧用户缓存和日志，不包含近期缓存或开发下载缓存",
+  "developer_cache_requires_review": true
 }
