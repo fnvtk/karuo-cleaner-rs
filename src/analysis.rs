@@ -54,7 +54,7 @@ fn fetch(c:&Config,route:&str,body:Option<&Value>)->Result<Value,String>{
 /// 只输出固定分类、计数、总大小和年龄区间。未知扩展名也不发，防止文件名借扩展泄漏。
 pub fn anonymous_summary(entries:&[Entry],module:&str)->Value{
     let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();let ignored=safety::load_ignored_paths();let mut groups:BTreeMap<&str,(u64,u64,u64,u64)>=BTreeMap::new();
-    for e in entries{let category=match e.kind.as_str(){"cache"=>"旧缓存","log"=>"旧日志","application"=>"应用包","app_residue"=>"关联残留",_=>"普通文件"};let g=groups.entry(category).or_default();g.0+=1;g.1=g.1.saturating_add(e.size);let protected=ignored.as_ref().map_or(true,|p|safety::matches_ignored(Path::new(&e.path),p))||safety::is_protected(Path::new(&e.path));if protected{g.2+=1}if e.modified.is_some_and(|t|now.saturating_sub(t)>=90*86400){g.3+=1}}
+    for e in entries{let category=match e.kind.as_str(){"cache"=>"旧缓存","recent_cache"=>"近期缓存（需确认）","developer_cache"=>"开发工具下载缓存","log"=>"旧日志","application"=>"应用包","app_residue"=>"关联残留",_=>"普通文件"};let g=groups.entry(category).or_default();g.0+=1;g.1=g.1.saturating_add(e.size);let protected=ignored.as_ref().map_or(true,|p|safety::matches_ignored(Path::new(&e.path),p))||safety::is_protected(Path::new(&e.path));if protected{g.2+=1}if e.modified.is_some_and(|t|now.saturating_sub(t)>=90*86400){g.3+=1}}
     let categories:Vec<_>=groups.into_iter().map(|(name,(count,bytes,protected,older_90_days))|json!({"category":name,"count":count,"bytes":bytes,"protected":protected,"older_90_days":older_90_days})).collect();
     let optimization=if module=="optimize"{let h=PathBuf::from(std::env::var_os("HOME").unwrap_or_default());let user=fs::read_dir(h.join("Library/LaunchAgents")).map(|x|x.flatten().filter(|x|x.path().extension().is_some_and(|e|e=="plist")).count()).unwrap_or(0);json!({"user_launch_agent_count":user,"rule":"系统登录项只由用户明确确认后启停；不要建议批量关闭全部登录项，不要把已安装数量当成可安全关闭数量"})}else{Value::Null};
     json!({"module":match module{"smart"=>"智能扫描","junk"=>"系统垃圾","large"=>"大型旧文件","uninstall"=>"卸载器","optimize"=>"优化",_=>"只读空间分析"},"categories":categories,"optimization":optimization,"privacy":"未发送文件名、路径、内容、应用名、BundleID、PID或任何用户身份信息","rules":["大或旧不等于可删","系统、数据库、云盘、密钥和保护名单优先保留","缓存日志也必须操作前复查占用与身份","AI只建议，不能覆盖后台规则或自动授权删除"]})
@@ -83,6 +83,8 @@ fn local_role(e:&Entry)->(&'static str,bool,&'static str){
  let p=Path::new(&e.path);if let Some(reason)=safety::path_protection_reason(p){return("受保护",false,reason)}
  if e.kind=="application"{return("应用包",false,"卸载需要关联清单和明确确认")}
  if e.is_dir{return("文件夹",false,"先查看内部索引，再逐文件核对，不整体删除目录")}
+ if e.kind=="recent_cache"{return("近期缓存",false,"近期缓存可能仍有用，需用户逐项确认，不自动推荐")}
+ if e.kind=="developer_cache"{return("开发工具下载缓存",true,"可重新下载；离线构建需保留，清理前复查占用与身份")}
  if e.kind=="cache"||e.kind=="log"{return(if e.kind=="cache"{"旧缓存"}else{"旧日志"},true,"已通过本机缓存日志筛选，仍复查占用与身份")}
  let ext=p.extension().and_then(|x|x.to_str()).unwrap_or("").to_lowercase();
  if e.path.contains("/target/debug/")||e.path.contains("/target/release/"){if ["rlib","rmeta","o","d"].contains(&ext.as_str()){return("可重建编译产物",true,"编译中和被占用时保留；清理后下次构建需重新生成")}}

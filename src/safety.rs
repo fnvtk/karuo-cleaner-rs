@@ -97,7 +97,10 @@ pub fn junk_metadata_safe(path: &Path, metadata: &fs::Metadata) -> bool {
 /// 此函数只允许 cache/log；不会把大型文件或应用伪装成自动垃圾。
 pub fn validate_junk_entry(entry: &Entry) -> Result<(), String> {
     let h = home().ok_or("无法确定用户目录")?;
-    let (root, days) = match entry.kind.as_str() { "cache" => (h.join("Library/Caches"), 7), "log" => (h.join("Library/Logs"), 30), _ => return Err("自动清理仅允许旧缓存与旧日志".into()) };
+    let (root, days) = match entry.kind.as_str() { "cache" => (h.join("Library/Caches"), 7), "log" => (h.join("Library/Logs"), 30), "recent_cache" => (h.join("Library/Caches"),1), "developer_cache" => {
+        let allowed=[h.join(".npm/_cacache"),h.join(".cargo/registry/cache")];
+        let root=allowed.into_iter().find(|root|Path::new(&entry.path).starts_with(root)&&Path::new(&entry.path)!=root).ok_or("不在开发缓存白名单内")?;(root,7)
+    }, _ => return Err("自动清理仅允许旧缓存与旧日志".into()) };
     let p = Path::new(&entry.path);
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let canonical = fs::canonicalize(p).map_err(|e| e.to_string())?;

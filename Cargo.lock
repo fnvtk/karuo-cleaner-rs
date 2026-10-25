@@ -1052,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "karuo-cleaner"
-version = "1.4.13"
+version = "1.5.0"
 dependencies = [
  "libc",
  "objc2",

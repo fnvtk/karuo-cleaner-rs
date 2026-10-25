@@ -16,8 +16,8 @@ pub fn build_entries(entries:Vec<Entry>)->Result<Value,String>{
  let ignored=crate::safety::load_ignored_paths()?;let mut accepted=Vec::new();let mut protected=0;let mut seen=HashSet::new();
  for e in entries {let p=PathBuf::from(&e.path);let root=PathBuf::from(&e.scope_root);let Ok(m)=fs::symlink_metadata(&p)else{protected+=1;continue};
  if !seen.insert(p.clone()){continue}
- if e.is_dir||!matches!(e.kind.as_str(),"file"|"large"|"old"|"cache"|"log")||p==root||!p.starts_with(&root)||fs::canonicalize(&p).ok().as_deref()!=Some(&p)||m.ino()!=e.inode||m.dev()!=e.device||m.len()!=e.size||Some(m.mtime().max(0)as u64)!=e.modified||m.mtime_nsec()!=e.mtime_nsec||!crate::safety::junk_metadata_safe(&p,&m)||crate::safety::matches_ignored(&p,&ignored){protected+=1;continue}
- if matches!(e.kind.as_str(),"cache"|"log")&&crate::safety::validate_junk_entry(&e).is_err(){protected+=1;continue}accepted.push(e);
+ if e.is_dir||!matches!(e.kind.as_str(),"file"|"large"|"old"|"cache"|"log"|"recent_cache"|"developer_cache")||p==root||!p.starts_with(&root)||fs::canonicalize(&p).ok().as_deref()!=Some(&p)||m.ino()!=e.inode||m.dev()!=e.device||m.len()!=e.size||Some(m.mtime().max(0)as u64)!=e.modified||m.mtime_nsec()!=e.mtime_nsec||!crate::safety::junk_metadata_safe(&p,&m)||crate::safety::matches_ignored(&p,&ignored){protected+=1;continue}
+ if matches!(e.kind.as_str(),"cache"|"log"|"recent_cache"|"developer_cache")&&crate::safety::validate_junk_entry(&e).is_err(){protected+=1;continue}accepted.push(e);
  }
  let mut b=[0u8;24];fs::File::open("/dev/urandom").and_then(|mut f|f.read_exact(&mut b)).map_err(|_|"无法生成清理计划")?;let id=b.iter().map(|b|format!("{b:02x}")).collect::<String>();plans().lock().map_err(|_|"计划锁失败")?.insert(id.clone(),Plan{entries:accepted,protected});page_plan(&id,0)
 }

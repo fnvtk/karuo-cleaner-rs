@@ -1,6 +1,6 @@
 """Installed-app read-only plan check. Creates its own fixture; does not apply plans."""
 import json,pathlib,subprocess,tempfile,time
-EXE='/Applications/清空AI.app/Contents/MacOS/KaruoCleaner'
+EXE='/Applications/毕方AI.app/Contents/MacOS/KaruoCleaner'
 def api(cmd,**kw):
  return json.loads(subprocess.check_output([EXE,'--api',json.dumps(dict(cmd=cmd,**kw))],timeout=15))
 with tempfile.TemporaryDirectory(prefix='.karuo-selection-check-',dir=pathlib.Path.home()) as fixture:

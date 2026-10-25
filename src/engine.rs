@@ -90,7 +90,7 @@ pub fn scan_junk_incremental(cancel: &AtomicBool, progress: impl Fn(String), par
     let roots = [
         (
             home.join("Library/Caches"),
-            7_u64,
+            1_u64,
             "cache",
             "用户缓存；普通文件且至少 7 天未修改",
         ),
@@ -100,6 +100,8 @@ pub fn scan_junk_incremental(cancel: &AtomicBool, progress: impl Fn(String), par
             "log",
             "旧日志；普通文件且至少 30 天未修改",
         ),
+        (home.join(".npm/_cacache"),7_u64,"developer_cache","npm下载缓存；至少7天未修改，可重新下载"),
+        (home.join(".cargo/registry/cache"),7_u64,"developer_cache","Rust下载缓存；至少7天未修改，离线构建可能需要重新下载"),
     ];
     let now = now_seconds();
 
@@ -173,7 +175,8 @@ pub fn scan_junk_incremental(cancel: &AtomicBool, progress: impl Fn(String), par
             if modified.map_or(true, |mtime| mtime > oldest) || !crate::safety::junk_metadata_safe(path, &metadata) {
                 continue;
             }
-            if let Some(entry) = make_entry(path, kind, &root, detail) {
+            let (entry_kind,entry_detail)=if kind=="cache" && modified.is_some_and(|m|m>now.saturating_sub(7*DAY_SECONDS)){("recent_cache","近期缓存；至少1天未修改，清理后可能需要重新下载，请确认")}else{(kind,detail)};
+            if let Some(entry) = make_entry(path, entry_kind, &root, entry_detail) {
                 state.append(entry);
             } else {
                 state.skipped(path);

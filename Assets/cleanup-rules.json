@@ -1,5 +1,5 @@
 {
-  "version": "2026-10-24.1",
+  "version": "2026-10-25.1",
   "source": "本项目安全规则；当前Runtime授权资料中未找到电脑清理经验",
   "cache_review_days": 7,
   "log_review_days": 30,
@@ -36,5 +36,12 @@
     "数据库、凭证、聊天资料、云端占位和保护名单保留",
     "AI仅分析匿名摘要，生成清单；用户确认后移入废纸篓",
     "删除前重新核验身份、修改时间和占用；历史可撤回"
-  ]
+  ],
+  "recent_cache_review_days": 1,
+  "recent_cache_requires_review": true,
+  "developer_cache_roots": [
+    "~/.npm/_cacache",
+    "~/.cargo/registry/cache"
+  ],
+  "automatic_scope": "定时清理仅旧用户缓存和日志，不包含近期缓存或开发下载缓存"
 }

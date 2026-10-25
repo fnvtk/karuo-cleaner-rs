@@ -497,10 +497,10 @@ fn main() -> wry::Result<()> {
         std::process::exit(selftest::run());
     }
     let event_loop = EventLoopBuilder::<UiEvent>::with_user_event().build();
-    let window = WindowBuilder::new().with_title("清空AI")
+    let window = WindowBuilder::new().with_title("毕方AI")
         .with_inner_size(LogicalSize::new(1180.0, 760.0))
         .with_min_inner_size(LogicalSize::new(960.0, 600.0)).build(&event_loop).expect("无法创建窗口");
-    let mut allowed = vec![home().join("Library/Caches"), home().join("Library/Logs"), PathBuf::from("/Applications"), home().join("Applications")];
+    let mut allowed = vec![home().join(".npm/_cacache"),home().join(".cargo/registry/cache"),home().join("Library/Caches"), home().join("Library/Logs"), PathBuf::from("/Applications"), home().join("Applications")];
     if let Ok(bytes) = fs::read(saved_roots()) {
         if let Ok(roots) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) {
             for root in roots {

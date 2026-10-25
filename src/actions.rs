@@ -355,7 +355,7 @@ impl TrashService {
         // 清理类型是后台扫描产生的能力边界，不能把目录或空间图当作可删除文件。
         match entry.kind.as_str() {
             "app_residue" => crate::uninstall::validate_residue(entry)?,
-            "cache" | "log" => crate::safety::validate_junk_entry(entry)?,
+            "cache" | "log" | "recent_cache" | "developer_cache" => crate::safety::validate_junk_entry(entry)?,
             "file" | "large" | "old" => {
                 if !crate::safety::junk_metadata_safe(source, &metadata) {
                     return Err("受保护、数据库、云端占位、硬链接或非普通文件，已跳过".into());
