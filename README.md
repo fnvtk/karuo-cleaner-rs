@@ -2,9 +2,9 @@
 
 **电脑空间不够？先看清，再清理。**
 
-文件越攒越多，却不知道该从哪里下手？毕方AI帮你找出占空间的文件。不知道能不能删，就直接问 AI。看懂清单，再决定要不要清理。
+点一下「整理空间」，毕方AI在首页完成扫描、安全审核和整理。看着进度前进，结束后直接看到整理体积、耗时和空间变化。重要资料保留，整理还能撤回。
 
-[下载毕方AI · Mac 版](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.5.1/BifangAI-1.5.1-macos.zip)
+[下载毕方AI · Mac 版](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.6.0/BifangAI-1.6.0-macos.zip)
 
 名字取自《山海经·西山经》的毕方。先找出占空间的内容，再让 AI 帮你看清该留什么。
 
@@ -75,3 +75,5 @@ AI 就在清理页面旁边。看着文件问，不用来回切页面，也不�
 需要对接工具？请看 [接口说明](API/README.md)。
 
 [看看新版如何减少按钮、直接整理](docs/界面精简说明.md)
+
+[看看新版首页如何一键整理](docs/首页整理说明.md)

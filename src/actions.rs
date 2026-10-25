@@ -73,7 +73,8 @@ impl TrashService {
     }
 
     /// 移入系统废纸篓。移动前写入意图日志，移动后保存系统返回的真实 Trash 路径。
-    pub fn move_entries(&self, entries: &[Entry]) -> ActionReport {
+    pub fn move_entries(&self, entries: &[Entry]) -> ActionReport {self.move_entries_with_progress(entries,|_,_,_,_|{})}
+    pub fn move_entries_with_progress(&self, entries:&[Entry], mut progress:impl FnMut(usize,usize,u64,&str))->ActionReport {
         let _guard = self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut report = ActionReport::default();
         let _process_lock = match self.process_lock() {
@@ -105,9 +106,10 @@ impl TrashService {
         };
         let mut prepared = Vec::with_capacity(entries.len());
         let mut intents = Vec::with_capacity(entries.len());
-        for entry in entries {
+        for (index,entry) in entries.iter().enumerate() {
+            progress(index,entries.len(),0,"check");
             let source = PathBuf::from(&entry.path);
-            let snapshot = match self.validate_entry(entry, &source) {
+            let snapshot = match self.validate_entry_with_open_check(entry, &source,false) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     report.failures.push(format!("{}：{}", entry.path, error));
@@ -139,7 +141,9 @@ impl TrashService {
             }
         }
 
-        for (entry, source, snapshot, intent) in prepared {
+        let prepared_count=prepared.len();let mut moved_bytes=0u64;
+        for (index,(entry, source, snapshot, intent)) in prepared.into_iter().enumerate() {
+            progress(index,prepared_count,moved_bytes,"move");
             // journal I/O 期间文件可能发生变化，因此移动前再比对扫描身份。
             if let Err(error) = self.validate_entry(entry, &source) {
                 journal.intents.retain(|item| item.id != intent.id);
@@ -183,6 +187,7 @@ impl TrashService {
             journal.records.retain(|old| old.id != record.id);
             journal.records.push(record.clone());
             journal.intents.retain(|item| item.id != intent.id);
+            moved_bytes=moved_bytes.saturating_add(record.size);
             report.records.push(record);
         }
         if let Err(error) = self.write_journal(&journal) {
@@ -190,6 +195,7 @@ impl TrashService {
                 "文件已处理，但批次历史更新失败；移动前保存的恢复意图仍保留，重新打开历史可尝试找回：{error}"
             ));
         }
+        progress(entries.len(),entries.len(),moved_bytes,"move");
         report
     }
 
@@ -329,7 +335,8 @@ impl TrashService {
         errors
     }
 
-    fn validate_entry(&self, entry: &Entry, source: &Path) -> Result<Snapshot, String> {
+    fn validate_entry(&self,entry:&Entry,source:&Path)->Result<Snapshot,String>{self.validate_entry_with_open_check(entry,source,true)}
+    fn validate_entry_with_open_check(&self, entry: &Entry, source: &Path, check_open:bool) -> Result<Snapshot, String> {
         let ignored = crate::safety::load_ignored_paths()?;
         if crate::safety::matches_ignored(source, &ignored) {
             return Err("此路径位于用户保护名单，已拒绝清理".into());
@@ -365,7 +372,7 @@ impl TrashService {
                 && source.parent().is_some_and(|p| p == Path::new("/Applications") || std::env::var_os("HOME").is_some_and(|h| p == PathBuf::from(h).join("Applications"))) => {}
             _ => return Err("不支持的清理类型或应用目录不在卸载白名单".into()),
         }
-        if !metadata.is_dir() { crate::safety::ensure_not_open(source)?; }
+        if check_open && !metadata.is_dir() { crate::safety::ensure_not_open(source)?; }
         // 占用检查之后重读，避免慢检查掩盖文件更新。
         let metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
         let current = snapshot_from_metadata(&metadata);

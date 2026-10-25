@@ -13,6 +13,7 @@ mod startup;
 mod control;
 mod uninstall;
 mod cleanup;
+mod smart_flow;
 
 use actions::TrashService;
 use model::{Entry, ScanResult, TrashRecord};
@@ -83,7 +84,7 @@ fn records(state: &Arc<Mutex<State>>, proxy: &EventLoopProxy<UiEvent>) {
             return;
         }
     }
-    let items: Vec<_> = service(state).history().into_iter().filter(|r| !r.restored).collect();
+    let all=service(state).history();smart_flow::reconcile(proxy,&all);let items: Vec<_> = all.into_iter().filter(|r| !r.restored).collect();
     emit(proxy, json!({"event":"history","records":items}));
 }
 fn confirm(title: &str, description: &str) -> bool {
@@ -198,6 +199,8 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
         if ["scan","space_start"].contains(&command){scan_error(&proxy,&request,"正在处理文件；可以继续浏览已有结果，完成后再开始新扫描。")}else{message(&proxy, "正在处理文件，请等待完成后再操作。", true)}return;
     }
     match command {
+        "smart_clean" => smart_flow::start(state,proxy,busy),
+        "smart_clean_status" => smart_flow::status(&proxy),
         "rules_get" => emit(&proxy,json!({"event":"rules","profile":serde_json::from_str::<Value>(include_str!("../Assets/cleanup-rules.json")).unwrap_or(Value::Null),"scan":"只读，不设文件数量或总时长截断；权限失败与主动取消明确保留","cleanup":"后台扫描身份、真实路径、inode/device、大小、修改时间、打开占用重新核验；移入废纸篓可恢复","protected":["系统与Apple应用","运行中应用与本应用","用户保护名单","凭证与钥匙串","数据库与云占位","链接及共享数据"],"uninstall":"准确Bundle ID关联，AI审阅后逐项确认；应用数据与共享目录保留","schedule":"自动清理执行预算保留：50项、128MB；不处理个人文档与应用"})),
         "session_get" | "scan_page" => {let module=request["module"].as_str().unwrap_or("smart");let mut d=state.lock().unwrap();if module=="space"{let d_running=d.sessions.jobs.get("space").is_some_and(|j|!j.token.load(Ordering::SeqCst));let cache=d.space_cache.clone();let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);drop(d);let view=cache.lock().unwrap().view();emit(&proxy,json!({"event":"session","module":"space","request_id":id,"scanning":d_running,"data":view}));}else{let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);let filter=if command=="scan_page"{Some((request["category"].as_str().unwrap_or("all"),request["query"].as_str().unwrap_or(""),request["page"].as_u64().unwrap_or(0)as usize))}else{None};let page=d.sessions.page(module,filter);emit(&proxy,json!({"event":if command=="scan_page"{"scan_page"}else{"session"},"module":module,"request_id":id,"scanning":page["running"],"data":page}));}},
         "ai_chat" => {
@@ -376,7 +379,8 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             let chosen: Vec<_> = service(&state).history().into_iter().filter(|r| !r.restored && selected.contains(&r.id)).collect();
             if chosen.is_empty() || chosen.len() != selected.len() { message(&proxy, "记录不存在或已变化，未操作。", true); return; }
             let purge = command == "purge";
-            if purge && !confirm("永久清理这些文件？", &format!("将永久删除本应用记录的 {} 项。此操作不可撤销，不会清空废纸篓中的其他内容。", chosen.len())) { return; }
+            let smart_release=request["smart_flow"]==true;
+            if purge && !confirm("永久清理这些文件？", &format!("将永久删除本应用记录的 {} 项。此操作不可撤销，不会清空废纸篓中的其他内容。", chosen.len())) { if smart_release{emit(&proxy,json!({"event":"smart_release","cancelled":true}));}return; }
             busy.store(true, Ordering::SeqCst);
             thread::spawn(move || {
                 let _busy_reset = BusyReset(busy.clone());
@@ -394,6 +398,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                 } else { format!("部分操作未完成：\n{}", errors.iter().take(8).cloned().collect::<Vec<_>>().join("\n")) };
                 if purge { text.push_str(&format!("\n系统可用空间变化：{:.1} MB。系统读数可能延后更新，并受其他程序活动影响。", after.saturating_sub(before) as f64 / 1_000_000.0)); }
                 drop(_busy_reset);
+                if smart_release{let remaining:Vec<_>=service(&state).history().into_iter().filter(|r|chosen.iter().any(|c|c.id==r.id)&&!r.restored).map(|r|r.id).collect();emit(&proxy,json!({"event":"smart_release","cancelled":false,"errors":errors,"remaining_ids":remaining,"available_delta":i128::from(after)-i128::from(before)}));smart_flow::released(&proxy,i128::from(after)-i128::from(before),remaining,&errors);}
                 message(&proxy, text, !errors.is_empty()); records(&state, &proxy); ready(&proxy);
             });
         },
@@ -429,7 +434,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
 /// 磁盘写入期间仍保持界面可读、可导航。文件清理/扫描等待；本机设置和启动项调整可继续使用。
 fn allowed_while_files_are_processing(command: &str) -> bool {
     matches!(command,
-        "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
+        "smart_clean_status" | "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
         "ignore_get" | "schedule_get" | "guardian_get" | "ai_get" | "rules_get" |
         "optimize" | "startup_get" | "login_settings" | "reveal" | "ai_chat" |
         "ai_analyze" | "ai_models" | "uninstall_plan" | "uninstall_analyze" |
