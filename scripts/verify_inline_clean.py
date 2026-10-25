@@ -18,6 +18,9 @@ try:
  for _ in range(100):
   if (support/'control.sock').exists():break
   time.sleep(.1)
+ assert api('space_goal_save',percent=20).get('percent')==20
+ assert api('space_goal_get').get('percent')==20
+ assert api('space_goal_save',percent=40).get('error')
  denied=api('smart_clean');assert denied.get('error') and denied.get('executed') is False,denied
  assert apply({'cmd':'smart_clean'}).get('queued') is True
  phases=set()
@@ -29,6 +32,8 @@ try:
  assert result['available_after']-result['available_before']==result['available_delta']
  assert not files[0].exists() and not files[1].exists();assert all(p.exists() for p in files[2:])
  if args.live_ai:assert result.get('ai_source')=='ai',{'ai_source':result.get('ai_source'),'advice':result.get('ai_advice')}
+ assert result.get('target_percent')==20 and result.get('target_shortfall') is not None,result
+ preview=api('purge_preview',ids=result['record_ids'],smart_flow=True);assert preview.get('count')==2 and preview.get('token'),preview
  assert (support/'smart-clean-last.json').exists()
  process.terminate();process.wait(timeout=10);process=subprocess.Popen([str(exe)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  for _ in range(100):
@@ -40,7 +45,11 @@ try:
  assert recovered_status.get('record_ids')==result.get('record_ids'),recovered_status
  apply({'cmd':'restore','ids':result['record_ids']})
  assert all(p.read_bytes()==b'owned inline fixture\n'*32768 for p in files)
- status=api('smart_clean_status');assert status.get('phase')=='restored' and status.get('record_ids')==[],status
+ for _ in range(100):
+  status=api('smart_clean_status')
+  if status.get('phase')=='restored':break
+  time.sleep(.1)
+ assert status.get('phase')=='restored' and status.get('record_ids')==[],status
  print(json.dumps({'passed':True,'phases_observed':sorted(phases),'moved_count':result['moved_count'],'moved_bytes':result['moved_bytes'],'ai_source':result.get('ai_source'),'disk_delta_measured':True,'all_5_fixtures_restored':True,'completion_restored_after_restart':True,'purged':False},ensure_ascii=False),flush=True);success=True
 finally:
  process.terminate();process.wait(timeout=10);(support/'ai-config.json').unlink(missing_ok=True)
