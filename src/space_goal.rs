@@ -8,10 +8,11 @@ pub fn status(proxy:&EventLoopProxy<UiEvent>){emit(proxy,latest().lock().unwrap(
 pub fn target(total:u64,available:u64,percent:u8)->Value{let required=(u128::from(total)*u128::from(percent)/100).min(u64::MAX as u128)as u64;json!({"percent":percent,"total_bytes":total,"available_bytes":available,"target_bytes":required,"shortfall_bytes":required.saturating_sub(available),"target_reached":available>=required})}
 pub fn context()->Value{let disk=disk();let p=guardian::goal().map(|g|g.percent).unwrap_or(10);target(disk["total"].as_u64().unwrap_or(0),disk["available"].as_u64().unwrap_or(0),p)}
 pub fn fit(entries:Vec<Entry>,needed:u64)->Vec<Entry>{let mut bytes=0u64;entries.into_iter().take_while(|e|{if bytes>=needed{return false}bytes=bytes.saturating_add(e.size);true}).collect()}
-pub fn start(proxy:EventLoopProxy<UiEvent>){
+pub fn cancel(){if let Some(token)=active().lock().unwrap().as_ref(){token.store(true,Ordering::SeqCst)}}
+pub fn start(proxy:EventLoopProxy<UiEvent>,task:Option<tasks::Guard>){
  let target=context();let percent=target["percent"].as_u64().unwrap_or(10);let token=Arc::new(AtomicBool::new(false));if let Some(old)=active().lock().unwrap().replace(token.clone()){old.store(true,Ordering::SeqCst)}
  publish(&proxy,json!({"event":"goal_analysis","phase":"scan","percent":percent,"target":target}));
- thread::spawn(move||{let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||->Result<Value,String>{
+ thread::spawn(move||{let _task=task;let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||->Result<Value,String>{
   let preferences=guardian::load()?;let restored=guardian::recovered()?;
   let scan=engine::scan_junk_incremental(&token,|_|{},|_|{});if token.load(Ordering::SeqCst){return Err("目标已切换".into())}
   let mut safe=Vec::new();let mut review=Vec::new();
@@ -27,7 +28,7 @@ pub fn start(proxy:EventLoopProxy<UiEvent>){
   let review_id=if needed>safe_bytes&&!review.is_empty(){analysis::retain_cleanup_review(review)}else{String::new()};
   Ok(json!({"event":"goal_analysis","phase":"done","percent":percent,"target":target,"safe_bytes":safe_bytes,"review_bytes":review_bytes,"remaining_after_safe":needed.saturating_sub(safe_bytes),"source":answer["source"],"reply":answer["reply"],"error":answer["error"],"usage":answer["usage"],"proposal":proposal,"review_proposal_id":review_id,"scanned":scan.scanned,"executed":false}))
  }));
- if token.load(Ordering::SeqCst){return}
+ if token.load(Ordering::SeqCst){publish(&proxy,json!({"event":"goal_analysis","phase":"cancelled","percent":percent,"executed":false}));return}
  match result{Ok(Ok(v))=>publish(&proxy,v),Ok(Err(e))=>publish(&proxy,json!({"event":"goal_analysis","phase":"failed","percent":percent,"error":e})),Err(_)=>publish(&proxy,json!({"event":"goal_analysis","phase":"failed","percent":percent,"error":"目标分析中断，请重试"}))}
  });
 }

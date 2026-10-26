@@ -17,6 +17,8 @@ mod smart_flow;
 mod release_confirm;
 mod edit_menu;
 mod space_goal;
+mod billing;
+mod tasks;
 
 use actions::TrashService;
 use model::{Entry, ScanResult, TrashRecord};
@@ -53,7 +55,7 @@ impl Drop for BusyReset {
 }
 
 #[derive(Serialize)]
-struct RunningApp { pid: i32, name: String, bundle_id: String, is_active: bool }
+struct RunningApp { pid: i32, name: String, bundle_id: String, is_active: bool, launched_at: Option<f64> }
 
 fn home() -> PathBuf { PathBuf::from(std::env::var_os("HOME").unwrap_or_default()) }
 fn journal() -> PathBuf { home().join("Library/Application Support/KaruoCleaner/history-rust.json") }
@@ -61,7 +63,7 @@ fn saved_roots() -> PathBuf { home().join("Library/Application Support/KaruoClea
 fn valid_picked_root(root: &Path) -> bool {
     root.is_absolute() && root.is_dir()
 }
-fn emit(proxy: &EventLoopProxy<UiEvent>, value: Value) { let _ = proxy.send_event(UiEvent::Output(value)); }
+fn emit(proxy: &EventLoopProxy<UiEvent>, value: Value) { tasks::observe(&value); let _ = proxy.send_event(UiEvent::Output(value)); }
 fn message(proxy: &EventLoopProxy<UiEvent>, text: impl Into<String>, error: bool) {
     emit(proxy, json!({"event":"message","title":if error {"未完成的操作"} else {"操作结果"},"text":text.into(),"error":error}));
 }
@@ -135,7 +137,7 @@ fn applications() -> Vec<RunningApp> {
             bundle.starts_with("com.apple.") || app.processIdentifier() == std::process::id() as i32 { return None; }
         Some(RunningApp { pid: app.processIdentifier(),
             name: app.localizedName().map(|x| x.to_string()).unwrap_or_else(|| bundle.clone()),
-            bundle_id: bundle, is_active: app.isActive() })
+            bundle_id: bundle, is_active: app.isActive(), launched_at: app.launchDate().map(|d|d.timeIntervalSince1970()) })
     }).collect()
 }
 fn show_apps(proxy: &EventLoopProxy<UiEvent>) {
@@ -146,7 +148,7 @@ fn show_apps(proxy: &EventLoopProxy<UiEvent>) {
 fn scan_error(proxy:&EventLoopProxy<UiEvent>,request:&Value,text:&str){
     emit(proxy,json!({"event":"scan_error","module":request["module"].as_str().unwrap_or(if request["cmd"]=="space_start"{"space"}else{"smart"}),"request_id":request["request_id"],"text":text}));
 }
-fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>) {
+fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>, task:Option<tasks::Guard>) {
     if busy.load(Ordering::SeqCst) { scan_error(&proxy,request,"正在处理文件；当前结果仍保留，完成后可重新扫描。"); return; }
     let module = request["module"].as_str().unwrap_or("smart").to_owned();
     if !["smart","junk","uninstall","space","large"].contains(&module.as_str()) { return; }
@@ -159,6 +161,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
     let root=root.map(|r|if r==Path::new("/")&&Path::new("/System/Volumes/Data").is_dir(){PathBuf::from("/System/Volumes/Data")}else{r});
     emit(&proxy,json!({"event":"scan_started","module":module,"request_id":request_id}));
     thread::spawn(move || {
+        let _task=task;
         let progress = |text: String| { let timing={let mut data=state.lock().unwrap();if !data.sessions.progress(&module,request_id,&text){return}let s=&data.sessions.items[&module];(s.started_at_ms,s.elapsed_ms)};emit(&proxy, json!({"event":"progress","module":module,"text":text,"request_id":request_id,"started_at_ms":timing.0,"elapsed_ms":timing.1})); };
         let partial = |partial: &ScanResult| {
             let page={let mut d=state.lock().unwrap();if !d.sessions.current(&module,request_id){return}for entry in &partial.entries{if !d.sessions.items.get(&module).is_some_and(|s|s.removed.iter().any(|p|entry.path==*p||Path::new(&entry.path).starts_with(p))){d.approved.insert(entry.id.clone(),entry.clone());}}d.sessions.update(&module,request_id,partial.clone(),false);d.sessions.page(&module,None)};
@@ -198,31 +201,38 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
 
 fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>) {
     let command = request["cmd"].as_str().unwrap_or("");
+    let task=if matches!(command,"scan"|"space_start"|"smart_clean"|"goal_analyze")||(command=="space_goal_save"&&request["analyze"]==true){match tasks::begin(&request,&proxy){Ok(g)=>Some(g),Err(conflict)=>{emit(&proxy,conflict);return}}}else{None};
     if busy.load(Ordering::SeqCst) && !allowed_while_files_are_processing(command) {
         if ["scan","space_start"].contains(&command){scan_error(&proxy,&request,"正在处理文件；可以继续浏览已有结果，完成后再开始新扫描。")}else{message(&proxy, "正在处理文件，请等待完成后再操作。", true)}return;
     }
     match command {
-        "goal_analyze" => space_goal::start(proxy),
+        "task_status" => tasks::status(&proxy),
+        "task_switch" => tasks::switch(&request,&proxy),
+        "goal_analyze" => space_goal::start(proxy,task),
         "goal_analysis_status" => space_goal::status(&proxy),
-        "space_goal_get" | "space_goal_save" => {let error=if command=="space_goal_save"{request["percent"].as_u64().and_then(|p|u8::try_from(p).ok()).ok_or("目标无效".to_owned()).and_then(guardian::save_goal).err()}else{None};emit(&proxy,json!({"event":"space_goal","percent":guardian::goal().map(|g|g.percent).unwrap_or(10),"error":error}));if command=="space_goal_save"&&error.is_none()&&request["analyze"]==true{space_goal::start(proxy)}},
+        "space_goal_get" | "space_goal_save" => {let error=if command=="space_goal_save"{request["percent"].as_u64().and_then(|p|u8::try_from(p).ok()).ok_or("目标无效".to_owned()).and_then(guardian::save_goal).err()}else{None};emit(&proxy,json!({"event":"space_goal","percent":guardian::goal().map(|g|g.percent).unwrap_or(10),"error":error}));if command=="space_goal_save"&&error.is_none()&&request["analyze"]==true{space_goal::start(proxy,task)}},
         "purge_preview" => {let selected=ids(&request);let chosen:Vec<_>=service(&state).history().into_iter().filter(|r|!r.restored&&selected.contains(&r.id)).collect();if chosen.is_empty()||chosen.len()!=selected.len(){message(&proxy,"记录已变化，请重新选择。",true);return}match release_confirm::issue(&selected){Ok(token)=>emit(&proxy,json!({"event":"purge_preview","token":token,"ids":selected,"count":chosen.len(),"bytes":chosen.iter().map(|r|r.size).sum::<u64>(),"smart_flow":request["smart_flow"]==true})),Err(e)=>message(&proxy,e,true)}},
-        "smart_clean" => smart_flow::start(state,proxy,busy),
+        "smart_clean" => smart_flow::start(state,proxy,busy,task),
         "smart_clean_status" => smart_flow::status(&proxy),
+        "billing" => emit(&proxy,billing::handle(&request)),
         "rules_get" => emit(&proxy,json!({"event":"rules","profile":serde_json::from_str::<Value>(include_str!("../Assets/cleanup-rules.json")).unwrap_or(Value::Null),"scan":"只读，不设文件数量或总时长截断；权限失败与主动取消明确保留","cleanup":"后台扫描身份、真实路径、inode/device、大小、修改时间、打开占用重新核验；移入废纸篓可恢复","protected":["系统与Apple应用","运行中应用与本应用","用户保护名单","凭证与钥匙串","数据库与云占位","链接及共享数据"],"uninstall":"准确Bundle ID关联，AI审阅后逐项确认；应用数据与共享目录保留","schedule":"自动清理执行预算保留：50项、128MB；不处理个人文档与应用"})),
         "session_get" | "scan_page" => {let module=request["module"].as_str().unwrap_or("smart");let mut d=state.lock().unwrap();if module=="space"{let d_running=d.sessions.jobs.get("space").is_some_and(|j|!j.token.load(Ordering::SeqCst));let cache=d.space_cache.clone();let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);drop(d);let view=cache.lock().unwrap().view();emit(&proxy,json!({"event":"session","module":"space","request_id":id,"scanning":d_running,"data":view}));}else{let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);let filter=if command=="scan_page"{Some((request["category"].as_str().unwrap_or("all"),request["query"].as_str().unwrap_or(""),request["page"].as_u64().unwrap_or(0)as usize))}else{None};let page=if request["group_by"]=="directory"&&["junk","large"].contains(&module){d.sessions.directory_page(module,filter)}else{d.sessions.page(module,filter)};emit(&proxy,json!({"event":if command=="scan_page"{"scan_page"}else{"session"},"module":module,"request_id":id,"scanning":page["running"],"data":page}));}},
         "ai_chat" => {
             let module=request["module"].as_str().unwrap_or("smart").to_owned();let request_id=request["chat_request_id"].clone();
+            let subpage=request["subpage"].as_str().unwrap_or("running").to_owned();
+            let management=if module=="optimize" {Some(if subpage=="startup" {startup::list()} else {json!({"apps":applications()})})}else{None};
             thread::spawn(move||{
                 let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+                    if let Some(snapshot)=management{return analysis::management_chat(&subpage,&snapshot,&request)}
                     let entries=chat_entries(&request,&state)?;
                     let restore_ids:Vec<_>=state.lock().map_err(|_|"撤回状态不可用")?.last_moved.iter().map(|r|r.id.clone()).collect();
                     Ok::<Value,String>(analysis::chat(&entries,&module,request["text"].as_str().unwrap_or(""),&request["history"].as_array().cloned().unwrap_or_default(),json!({"scope":"indexed_candidates","count":entries.len(),"restore_ids":restore_ids})))
                 }));
                 let mut reply=match result{Ok(Ok(v))=>v,Ok(Err(e))=>json!({"event":"ai_chat","module":module,"source":"rules","reply":"未完成分析，没有执行清理。","error":e,"proposals":[]}),Err(_)=>json!({"event":"ai_chat","module":module,"source":"rules","reply":"分析遇到异常，请重新提问；没有执行清理。","error":"分析任务已结束","proposals":[]})};
-                reply["chat_request_id"]=request_id;emit(&proxy,reply);
+                reply["chat_request_id"]=request_id;if module=="optimize"{reply["subpage"]=json!(subpage)}emit(&proxy,reply);
             });
         },
-        "ai_proposal_plan" => {let proposal_id=request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("").to_owned();let proposal=match analysis::proposal(request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};match proposal{analysis::Proposal::Cleanup(entries)=>{thread::spawn(move||match cleanup::build_entries(entries){Ok(mut v)=>{v["proposal_id"]=json!(proposal_id);emit(&proxy,v)},Err(e)=>message(&proxy,e,true)});},analysis::Proposal::Uninstall(app)=>{match uninstall::build_plan(&app){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},analysis::Proposal::Schedule(config)=>emit(&proxy,json!({"event":"ai_schedule_proposal","config":config})),analysis::Proposal::Restore(targets)=>emit(&proxy,json!({"event":"ai_restore_proposal","count":targets.len(),"action":{"cmd":"undo_last","proposal_id":request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")},"executed":false}))}},
+        "ai_proposal_plan" => {let proposal_id=request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("").to_owned();let proposal=match analysis::proposal(request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};match proposal{analysis::Proposal::Cleanup(entries)=>{thread::spawn(move||match cleanup::build_entries(entries){Ok(mut v)=>{v["proposal_id"]=json!(proposal_id);emit(&proxy,v)},Err(e)=>message(&proxy,e,true)});},analysis::Proposal::Uninstall(app)=>{match uninstall::build_plan(&app){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},analysis::Proposal::Management(subpage,targets)=>emit(&proxy,json!({"event":"management_proposal","proposal_id":proposal_id,"subpage":subpage,"targets":targets})),analysis::Proposal::Schedule(config)=>emit(&proxy,json!({"event":"ai_schedule_proposal","config":config})),analysis::Proposal::Restore(targets)=>emit(&proxy,json!({"event":"ai_restore_proposal","count":targets.len(),"action":{"cmd":"undo_last","proposal_id":request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")},"executed":false}))}},
         "ai_get" => emit(&proxy,analysis::config_status()),
         "ai_save" => {let result=analysis::save_config(request["base_url"].as_str().unwrap_or(""),request["model"].as_str().unwrap_or(""),request["api_key"].as_str().unwrap_or(""));if let Err(e)=result{message(&proxy,e,true)}else{emit(&proxy,analysis::config_status())}},
         "ai_models" => {thread::spawn(move||emit(&proxy,analysis::refresh_models()));},
@@ -297,6 +307,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             let fail_token=token.clone();
             let snapshot_epoch=space::snapshot::epoch();
             thread::spawn(move || {
+                let _task=task;
                 let volume_id = volume.id.clone();
                 let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||space::scan(PathBuf::from(volume.scan_root),token,cache.clone(),|data| {
                     if state.lock().unwrap().sessions.current("space",request_id) {emit(&proxy,json!({"event":"space_view","volume":volume_id,"request_id":request_id,"data":data}));}
@@ -319,8 +330,11 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
             thread::spawn(move || {let mut c=cache.lock().unwrap();if c.browse(&path){let data=c.view_page(request["page"].as_u64().unwrap_or(0) as usize,request["query"].as_str().unwrap_or(""),request["show_hidden"].as_bool().unwrap_or(false));if let Err(e)=space::snapshot::save_view(&c){c.snapshot_notice=Some(format!("浏览位置未保存：{e}"));}emit(&proxy,json!({"event":"space_view","request_id":request_id,"data":data}));}});
         },
         "ready" => ready(&proxy),
-        "scan" => scan(&request, state, proxy, generation, busy),
+        "scan" => scan(&request, state, proxy, generation, busy,task),
         "cancel" => {if let Some(module)=request["module"].as_str(){
+            tasks::stop_requested(module);
+            if module=="smart"{smart_flow::cancel();space_goal::cancel()}
+
             let stopped={let mut d=state.lock().unwrap();d.sessions.cancel(module);if module=="space"&&d.sessions.jobs.contains_key(module){let id=d.sessions.items[module].request_id;d.sessions.jobs.remove(module);if let Some(s)=d.sessions.items.get_mut(module){s.done=true;s.outcome="cancelled".into();}Some((d.space_cache.clone(),id))}else{None}};
             if let Some((cache,id))=stopped{
                 let view={let mut c=cache.lock().unwrap();c.stop_partial();c.view()};emit(&proxy,json!({"event":"space_view","module":"space","request_id":id,"data":view}));let snapshot_epoch=space::snapshot::epoch();
@@ -410,6 +424,22 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                 message(&proxy, text, !errors.is_empty()); records(&state, &proxy); ready(&proxy);
             });
         },
+        "management_apply" => {
+            let result=(||->Result<(),String>{
+                let analysis::Proposal::Management(subpage,targets)=analysis::proposal(request["proposal_id"].as_str().unwrap_or(""))? else{return Err("此建议不是应用管理操作".into())};
+                if request["subpage"]!=subpage{return Err("建议所属子页已变化，请返回原子页重新分析".into())}
+                if request["api_confirmed"]!=true{return Err("请先核对建议并确认应用".into())}
+                if subpage=="startup" {
+                    let current=startup::list();if let Some(e)=current["error"].as_str(){return Err(e.into())}
+                    let items=current["items"].as_array().ok_or("登录项读取失败")?;
+                    for t in &targets{let c=items.iter().find(|x|x["id"]==t["id"]).ok_or("登录项已变化，请重新分析")?;if c["label"]!=t["label"]||c["manageable"]!=true||c["enabled"]!=t["enabled"]||analysis::startup_fingerprint(c)!=t["fingerprint"].as_u64(){return Err("登录项身份或状态已变化，请重新分析".into())}}
+                    let ids:Vec<_>=targets.iter().filter_map(|x|x["id"].as_str().map(str::to_owned)).collect();emit(&proxy,startup::set(&ids,false));
+                } else {
+                    let current=applications();for t in &targets{let c=current.iter().find(|x|json!(x.pid)==t["pid"]).ok_or("应用已退出，请重新分析")?;if json!(c.bundle_id)!=t["bundle_id"]||json!(c.launched_at)!=t["launched_at"]||c.launched_at.is_none()||startup::protected_label(&c.bundle_id)||c.is_active{return Err("应用身份或使用状态已变化，请重新分析".into())}}
+                    let mut n=0;for t in targets{if let Some(app)=NSRunningApplication::runningApplicationWithProcessIdentifier(t["pid"].as_i64().ok_or("应用编号无效")? as i32){if app.terminate(){n+=1}}}message(&proxy,format!("已发送 {n} 个正常退出请求，请处理应用的保存提示。"),false);show_apps(&proxy);
+                }Ok(())
+            })();if let Err(e)=result{message(&proxy,e,true)}
+        },
         "optimize" => show_apps(&proxy),
         "quit" | "terminate" => {
             let pids: Vec<_> = request["pids"].as_array().map(|v| v.iter().filter_map(|v| v.as_i64().map(|p| p as i32)).collect()).unwrap_or_default();
@@ -442,9 +472,9 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
 /// 磁盘写入期间仍保持界面可读、可导航。文件清理/扫描等待；本机设置和启动项调整可继续使用。
 fn allowed_while_files_are_processing(command: &str) -> bool {
     matches!(command,
-        "goal_analyze" | "goal_analysis_status" | "space_goal_get" | "space_goal_save" | "smart_clean_status" | "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
+        "task_status" | "task_switch" | "billing" | "goal_analyze" | "goal_analysis_status" | "space_goal_get" | "space_goal_save" | "smart_clean_status" | "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
         "ignore_get" | "schedule_get" | "guardian_get" | "ai_get" | "rules_get" |
-        "optimize" | "startup_get" | "login_settings" | "reveal" | "ai_chat" |
+        "quit" | "terminate" | "management_apply" | "optimize" | "startup_get" | "login_settings" | "reveal" | "ai_chat" |
         "ai_analyze" | "ai_models" | "uninstall_plan" | "uninstall_analyze" |
         "cleanup_plan_page" | "cleanup_analyze" | "space_browse" | "space_cleanup_plan" |
         "ai_save" | "schedule_save" | "guardian_save" | "ignore_add" | "ignore_remove" |

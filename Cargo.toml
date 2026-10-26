@@ -13,7 +13,7 @@ plist = "=1.10.1"
 rfd = { version = "=0.16.0", default-features = false }
 libc = "=0.2.189"
 objc2 = "=0.6.4"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSFileManager", "NSURL", "NSString", "NSError", "NSArray"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSDate", "NSFileManager", "NSURL", "NSString", "NSError", "NSArray"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSRunningApplication", "NSWorkspace", "NSAlert", "NSMenu", "NSMenuItem", "NSEvent", "NSButton", "NSControl", "NSResponder", "NSView", "libc"] }
 
 [profile.release]

@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex,atomic::{AtomicBool,Ordering}};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[link(name = "proc")]
@@ -74,14 +74,16 @@ impl TrashService {
 
     /// 移入系统废纸篓。移动前写入意图日志，移动后保存系统返回的真实 Trash 路径。
     pub fn move_entries(&self, entries: &[Entry]) -> ActionReport {self.move_entries_with_progress(entries,|_,_,_,_|{})}
-    pub fn move_entries_with_progress(&self, entries:&[Entry], mut progress:impl FnMut(usize,usize,u64,&str))->ActionReport {
+    pub fn move_entries_with_progress(&self, entries:&[Entry], progress:impl FnMut(usize,usize,u64,&str))->ActionReport {self.move_entries_cancellable(entries,&AtomicBool::new(false),progress)}
+    /// 停止只在文件边界检查；已移动文件的记录先落盘，再向上层返回。
+    pub fn move_entries_cancellable(&self, entries:&[Entry],cancel:&AtomicBool,mut progress:impl FnMut(usize,usize,u64,&str))->ActionReport {
         let _guard = self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut report = ActionReport::default();
         let _process_lock = match self.process_lock() {
             Ok(lock) => lock,
             Err(error) => { report.failures.push(error); return report; }
         };
-        if entries.is_empty() {
+        if entries.is_empty() || cancel.load(Ordering::SeqCst) {
             return report;
         }
 
@@ -109,6 +111,7 @@ impl TrashService {
         let mut prepared = Vec::with_capacity(entries.len());
         let mut intents = Vec::with_capacity(entries.len());
         for (index,entry) in entries.iter().enumerate() {
+            if cancel.load(Ordering::SeqCst){return report}
             progress(index,entries.len(),0,"check");
             let source = PathBuf::from(&entry.path);
             if source.starts_with(&npx){if let Err(e)=&npx_idle{report.failures.push(e.clone());continue}}
@@ -144,9 +147,12 @@ impl TrashService {
             }
         }
 
-        let prepared_count=prepared.len();let mut moved_bytes=0u64;
+        let prepared_count=prepared.len();let mut moved_bytes=0u64;let mut processed=0;
         for (index,(entry, source, snapshot, intent)) in prepared.into_iter().enumerate() {
+            if cancel.load(Ordering::SeqCst){break}
             progress(index,prepared_count,moved_bytes,"move");
+            if cancel.load(Ordering::SeqCst){break}
+            processed=index+1;
             // journal I/O 期间文件可能发生变化，因此移动前再比对扫描身份。
             if let Err(error) = self.validate_entry(entry, &source) {
                 journal.intents.retain(|item| item.id != intent.id);
@@ -198,7 +204,7 @@ impl TrashService {
                 "文件已处理，但批次历史更新失败；移动前保存的恢复意图仍保留，重新打开历史可尝试找回：{error}"
             ));
         }
-        progress(entries.len(),entries.len(),moved_bytes,"move");
+        progress(processed,prepared_count,moved_bytes,"move");
         report
     }
 
@@ -738,6 +744,15 @@ mod safety_tests {
         assert!(service.validate_entry(&entry,&path).is_err());
         assert_eq!(fs::read(&path).unwrap(),b"after-size-change");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_commits_completed_files_and_restores_only_those() {
+        let root=fixture();let files:Vec<_>=(0..3).map(|n|{let p=root.join(format!("cancel-{n}.txt"));fs::write(&p,format!("fixture-{n}")).unwrap();crate::engine::make_entry(&p,"file",&root,"停止恢复测试").unwrap()}).collect();
+        let service=TrashService::new(vec![root.clone()],root.join("history.json"));let cancel=AtomicBool::new(false);
+        let report=service.move_entries_cancellable(&files,&cancel,|i,_,_,phase|{if phase=="move"&&i==1{cancel.store(true,Ordering::SeqCst)}});
+        assert_eq!(report.records.len(),1,"{:?}",report.failures);assert!(!Path::new(&files[0].path).exists());assert!(Path::new(&files[1].path).exists());assert!(Path::new(&files[2].path).exists());
+        assert_eq!(service.history().iter().filter(|r|!r.restored).count(),1);assert!(service.restore(&report.records).is_empty());for (n,e) in files.iter().enumerate(){assert_eq!(fs::read_to_string(&e.path).unwrap(),format!("fixture-{n}"))}fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
