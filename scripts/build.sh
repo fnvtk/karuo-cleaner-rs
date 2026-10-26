@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_PATH="$PROJECT_DIR/dist/毕方AI.app"
+APP_PATH="$PROJECT_DIR/dist/轻理AI.app"
 export MACOSX_DEPLOYMENT_TARGET=13.0
 cargo build --offline --release --manifest-path "$PROJECT_DIR/Cargo.toml"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
@@ -10,13 +10,13 @@ cat > "$APP_PATH/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>毕方AI</string>
-<key>CFBundleDisplayName</key><string>毕方AI</string>
+<key>CFBundleName</key><string>轻理AI</string>
+<key>CFBundleDisplayName</key><string>轻理AI</string>
 <key>CFBundleIdentifier</key><string>com.karuo.cleaner</string>
 <key>CFBundleExecutable</key><string>KaruoCleaner</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.8.0</string>
-<key>CFBundleVersion</key><string>30</string>
+<key>CFBundleShortVersionString</key><string>1.8.1</string>
+<key>CFBundleVersion</key><string>31</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleIconFile</key><string>AppIcon</string>

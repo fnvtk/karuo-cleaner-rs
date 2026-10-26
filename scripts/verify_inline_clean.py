@@ -1,7 +1,7 @@
 """Verify inline cleanup using owned fixtures and isolated HOME; never purge Trash."""
 import argparse,json,os,pathlib,shutil,subprocess,tempfile,time
 parser=argparse.ArgumentParser();parser.add_argument('--live-ai',action='store_true');args=parser.parse_args()
-exe=pathlib.Path(os.environ.get('BIFANG_TEST_BINARY','/Applications/毕方AI.app/Contents/MacOS/KaruoCleaner'))
+exe=pathlib.Path(os.environ.get('BIFANG_TEST_BINARY','/Applications/轻理AI.app/Contents/MacOS/KaruoCleaner'))
 base=pathlib.Path(tempfile.mkdtemp(prefix='.bifang-inline-check-',dir=pathlib.Path.home())).resolve();support=base/'Library/Application Support/KaruoCleaner';support.mkdir(parents=True)
 if args.live_ai:
  shutil.copyfile(pathlib.Path.home()/'Library/Application Support/KaruoCleaner/ai-config.json',support/'ai-config.json');os.chmod(support/'ai-config.json',0o600)

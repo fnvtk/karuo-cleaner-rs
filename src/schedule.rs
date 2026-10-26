@@ -62,7 +62,7 @@ pub fn save(c:Config)->Result<(),String> {
     if let Some(b)=&previous{let v=plist::Value::from_reader_xml(b.as_slice()).map_err(|_|"已有定时任务文件损坏，未覆盖")?;if v.as_dictionary().and_then(|d|d.get("Label")).and_then(|v|v.as_string())!=Some(LABEL){return Err("已有任务不属于本应用，未覆盖".into())}}
     let previous_config=fs::read(config_path()).ok();
     if !c.enabled { bootout(); if installed(){return Err("系统未能停止定时任务，设置未保存".into())} atomic_json(&config_path(),&c)?; if path.exists(){fs::remove_file(&path).map_err(|e|e.to_string())?;}return Ok(()) }
-    let exe=PathBuf::from("/Applications/毕方AI.app/Contents/MacOS/KaruoCleaner");
+    let exe=PathBuf::from("/Applications/轻理AI.app/Contents/MacOS/KaruoCleaner");
     if !exe.is_file(){return Err("请先将应用安装到 Applications 后启用定时功能".into())}
     let bytes=plist_bytes(&c,&exe)?;bootout();atomic_bytes(&path,&bytes)?;
     let result=(||{atomic_json(&config_path(),&c)?;let out=Command::new("/bin/launchctl").arg("bootstrap").arg(domain()).arg(&path).output().map_err(|e|e.to_string())?;if !out.status.success()||!installed(){return Err(format!("系统拒绝加载定时任务：{}",String::from_utf8_lossy(&out.stderr).trim()))}Ok(())})();
@@ -113,7 +113,7 @@ pub fn run()->Result<Value,String> {
 #[cfg(test)] mod tests { use super::*;
     #[test]fn schedule_default_is_disabled_and_scan_only(){let c=Config::default();assert!(!c.enabled);assert_eq!(c.mode,"scan");assert!(c.validate().is_ok());}
     #[test]fn invalid_schedule_is_rejected(){for c in [Config{hour:24,..Config::default()},Config{minute:60,..Config::default()},Config{mode:"purge".into(),..Config::default()},Config{frequency:"secondly".into(),..Config::default()}]{assert!(c.validate().is_err())}}
-    #[test]fn calendar_uses_safe_executable_and_weekly_monday(){let c=Config{enabled:true,..Config::default()};let bytes=plist_bytes(&c,Path::new("/Applications/毕方AI.app/Contents/MacOS/KaruoCleaner")).unwrap();let v=plist::Value::from_reader_xml(bytes.as_slice()).unwrap();let d=v.as_dictionary().unwrap();assert_eq!(d["ProgramArguments"].as_array().unwrap()[1].as_string(),Some("--scheduled-run"));assert_eq!(d["StartCalendarInterval"].as_dictionary().unwrap()["Weekday"].as_unsigned_integer(),Some(1));assert!(d.get("RunAtLoad").is_none());}
+    #[test]fn calendar_uses_safe_executable_and_weekly_monday(){let c=Config{enabled:true,..Config::default()};let bytes=plist_bytes(&c,Path::new("/Applications/轻理AI.app/Contents/MacOS/KaruoCleaner")).unwrap();let v=plist::Value::from_reader_xml(bytes.as_slice()).unwrap();let d=v.as_dictionary().unwrap();assert_eq!(d["ProgramArguments"].as_array().unwrap()[1].as_string(),Some("--scheduled-run"));assert_eq!(d["StartCalendarInterval"].as_dictionary().unwrap()["Weekday"].as_unsigned_integer(),Some(1));assert!(d.get("RunAtLoad").is_none());}
     #[test]fn automatic_cleanup_never_targets_personal_files_or_recent_cache(){
         let at=200*86400;let mut e=crate::model::Entry{id:"fixture".into(),name:"cache".into(),path:home().join("Library/Caches/pip/fixture").to_string_lossy().into(),size:10,modified:Some(at-15*86400),kind:"cache".into(),detail:String::new(),is_dir:false,scope_root:String::new(),inode:0,device:0,mtime_nsec:0};
         assert!(automatic_candidate(&e,at));e.modified=Some(at-13*86400);assert!(!automatic_candidate(&e,at));e.modified=Some(0);

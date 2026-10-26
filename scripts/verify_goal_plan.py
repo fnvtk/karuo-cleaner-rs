@@ -1,6 +1,6 @@
 """Owned read-only fixtures: prove real target values reach the model and plans keep boundaries."""
 import json,os,pathlib,subprocess,tempfile,threading,time,shutil,http.server
-exe=pathlib.Path(os.environ.get('BIFANG_TEST_BINARY','dist/毕方AI.app/Contents/MacOS/KaruoCleaner')).resolve()
+exe=pathlib.Path(os.environ.get('BIFANG_TEST_BINARY','dist/轻理AI.app/Contents/MacOS/KaruoCleaner')).resolve()
 base=pathlib.Path(tempfile.mkdtemp(prefix='.bifang-goal-qa-',dir=pathlib.Path.home())).resolve();support=base/'Library/Application Support/KaruoCleaner';support.mkdir(parents=True)
 received=[]
 class Server(http.server.BaseHTTPRequestHandler):

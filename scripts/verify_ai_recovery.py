@@ -4,7 +4,7 @@ Runs the installed binary with isolated HOME/state; never purges Trash.
 import argparse,hashlib,json,os,pathlib,shutil,subprocess,tempfile,time
 parser=argparse.ArgumentParser();parser.add_argument('--live-ai',action='store_true');args=parser.parse_args()
 if not args.live_ai:raise SystemExit('Use --live-ai explicitly; this calls the configured model and tests self-created files only.')
-EXE=pathlib.Path(os.environ.get('BIFANG_TEST_BINARY','/Applications/毕方AI.app/Contents/MacOS/KaruoCleaner'))
+EXE=pathlib.Path(os.environ.get('BIFANG_TEST_BINARY','/Applications/轻理AI.app/Contents/MacOS/KaruoCleaner'))
 base=pathlib.Path(tempfile.mkdtemp(prefix='.karuo-recovery-check-',dir=pathlib.Path.home())).resolve();os.chmod(base,0o700)
 isolated=base/'home';support=isolated/'Library/Application Support/KaruoCleaner';support.mkdir(parents=True)
 config=pathlib.Path.home()/'Library/Application Support/KaruoCleaner/ai-config.json';shutil.copyfile(config,support/'ai-config.json');os.chmod(support/'ai-config.json',0o600)
