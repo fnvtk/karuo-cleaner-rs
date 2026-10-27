@@ -111,6 +111,8 @@ with tempfile.TemporaryDirectory(prefix='cm-ai-', dir=str(Path.home())) as raw_r
             context = json.loads(body['messages'][-1]['content'])
             assert context['subpage'] in ('running', 'startup') and 'items' in context
             assert 'scan' not in context
+            assert context['item_count']==len(context['items'])
+            if context['subpage']=='running':assert all(x['running'] is True and 'foreground' in x and 'active' not in x for x in context['items'])
         # Observe the actual provider request for every supported disk-space target.
         goals=[]
         for percent in (10,20,30):
