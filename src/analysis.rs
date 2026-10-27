@@ -152,7 +152,7 @@ pub fn management_chat(subpage:&str,snapshot:&Value,request:&Value)->Result<Valu
  let reply=parsed["reply"].as_str().filter(|s|!s.trim().is_empty()).ok_or("AI未返回有效建议")?;
  let mut chosen=Vec::new();for r in parsed["refs"].as_array().into_iter().flatten(){if let Some(i)=r.as_str().and_then(|s|s.strip_prefix('a')).and_then(|s|s.parse::<usize>().ok()){if anonymous.get(i).is_some_and(|x|x["action_allowed"]==true)&&!chosen.contains(&items[i]){chosen.push(items[i].clone())}}}
  let proposals=if chosen.is_empty(){vec![]}else{let count=chosen.len();let id=retain_proposal(Proposal::Management(subpage.into(),chosen));if id.is_empty(){return Err("无法保存本机建议，请重试".into())};vec![json!({"id":id,"kind":"management","subpage":subpage,"title":format!("应用建议 · {count} 项")})]};
- Ok(json!({"event":"ai_chat","module":"optimize","subpage":subpage,"source":"ai","reply":reply,"proposals":proposals,"usage":response["usage"]}))
+ Ok(json!({"event":"ai_chat","module":"optimize","subpage":subpage,"context_count":items.len(),"source":"ai","reply":reply,"proposals":proposals,"usage":response["usage"]}))
 }
 
 #[cfg(test)]mod management_tests{use super::*;
