@@ -73,7 +73,7 @@ fn disk() -> Value {
     if unsafe { libc::statvfs(path.as_ptr(), &mut v) } != 0 { return json!({"total":0,"available":0}); }
     json!({"total":(v.f_blocks as u64).saturating_mul(v.f_frsize as u64),"available":(v.f_bavail as u64).saturating_mul(v.f_frsize as u64)})
 }
-fn ready(proxy: &EventLoopProxy<UiEvent>) { emit(proxy, json!({"event":"ready","disk":disk()})); }
+fn ready(proxy: &EventLoopProxy<UiEvent>) { emit(proxy, json!({"event":"ready","version":env!("CARGO_PKG_VERSION"),"disk":disk()})); }
 fn service(state: &Arc<Mutex<State>>) -> TrashService {
     TrashService::new(state.lock().unwrap().allowed.clone(), journal())
 }
