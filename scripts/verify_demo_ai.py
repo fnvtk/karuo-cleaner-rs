@@ -108,6 +108,25 @@ with tempfile.TemporaryDirectory(prefix='cm-ai-', dir='/private/tmp') as raw_roo
             context = json.loads(body['messages'][-1]['content'])
             assert context['subpage'] in ('running', 'startup') and 'items' in context
             assert 'scan' not in context
+        # Observe the actual provider request for every supported disk-space target.
+        goals=[]
+        for percent in (10,20,30):
+            n=len(requests)
+            api({'cmd':'space_goal_save','percent':percent,'analyze':True})
+            for _ in range(300):
+                goal=api({'cmd':'goal_analysis_status'})
+                if goal.get('percent')==percent and goal.get('phase') in ('done','failed'):break
+                time.sleep(.02)
+            assert goal['phase']=='done' and goal['executed'] is False,goal
+            assert len(requests)==n+1,(percent,len(requests),n)
+            context=json.loads(requests[-1]['messages'][-1]['content'])['space_goal']
+            assert context['percent']==percent and goal['target']==context
+            assert context['shortfall_bytes']==max(0,context['total_bytes']*percent//100-context['available_bytes'])
+            assert goal['remaining_after_safe']==max(0,context['shortfall_bytes']-goal['safe_bytes'])
+            goals.append({'percent':percent,'target':context,'safe_bytes':goal['safe_bytes'],'remaining_after_safe':goal['remaining_after_safe']})
+        evidence=Path('release-assets/acceptance/goal-requests.json')
+        evidence.parent.mkdir(parents=True,exist_ok=True)
+        evidence.write_text(json.dumps({'provider':'loopback fixture','real_disk_metrics':True,'goals':goals},ensure_ascii=False,indent=2))
         state_file = root / 'Library/Application Support/KaruoCleaner/billing-demo.json'
         data = json.loads(state_file.read_text())
         data['milli_credits'] = 0

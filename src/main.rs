@@ -627,5 +627,20 @@ fn main() -> wry::Result<()> {
  use super::*;
  fn state()->Arc<Mutex<State>>{Arc::new(Mutex::new(State{volumes:vec![],space_cache:Arc::new(Mutex::new(space::Cache::default())),approved:HashMap::new(),roots:HashMap::new(),allowed:vec![],sessions:sessions::Sessions::default(),last_moved:vec![]}))}
  #[test]fn stale_ai_scan_and_selection_fail_before_model_request(){let s=state();let _t=s.lock().unwrap().sessions.start("junk",123);assert!(chat_entries(&json!({"module":"junk","scan_request_id":122}),&s).unwrap_err().contains("批次"));assert!(chat_entries(&json!({"module":"junk","scan_request_id":123,"ids":["missing"]}),&s).unwrap_err().contains("所选"));}
+ #[test]fn returned_ai_proposal_rejects_other_page_filter_and_new_batch(){
+  let s=state();let _token=s.lock().unwrap().sessions.start("junk",731);
+  analysis::bind_scope("scope-regression-junk",json!({"module":"junk","scan_request_id":731,"category":"cache","query":"old"}));
+  let request=json!({"proposal_id":"scope-regression-junk","module":"junk","category":"cache","query":"old"});
+  assert!(validate_ai_scope(&request,&s).is_ok());
+  let mut changed=request.clone();changed["module"]=json!("large");assert!(validate_ai_scope(&changed,&s).unwrap_err().contains("板块"));
+  changed=request.clone();changed["category"]=json!("log");assert!(validate_ai_scope(&changed,&s).unwrap_err().contains("筛选"));
+  let _next=s.lock().unwrap().sessions.start("junk",732);assert!(validate_ai_scope(&request,&s).unwrap_err().contains("批次"));
+ }
+ #[test]fn returned_ai_space_proposal_rejects_navigation(){
+  let s=state();s.lock().unwrap().space_cache.lock().unwrap().current=PathBuf::from("/fixture/a");
+  analysis::bind_scope("scope-regression-space",json!({"module":"space","scan_request_id":0,"path":"/fixture/a"}));
+  let request=json!({"proposal_id":"scope-regression-space","module":"space"});assert!(validate_ai_scope(&request,&s).is_ok());
+  s.lock().unwrap().space_cache.lock().unwrap().current=PathBuf::from("/fixture/b");assert!(validate_ai_scope(&request,&s).unwrap_err().contains("目录"));
+ }
  #[test]fn changed_space_directory_fails_before_disk_reads(){let s=state();assert!(chat_entries(&json!({"module":"space","path":"/old-directory","ids":["/old-directory/file"]}),&s).unwrap_err().contains("目录"));}
 }
