@@ -74,6 +74,9 @@ pub fn analyze(entries:&[Entry],module:&str)->Value{
 fn proposals()-> &'static std::sync::Mutex<std::collections::HashMap<String,Proposal>> {static P:std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String,Proposal>>>=std::sync::OnceLock::new();P.get_or_init(Default::default)}
 pub fn proposal(id:&str)->Result<Proposal,String>{proposals().lock().map_err(|_|"建议暂不可用")?.get(id).cloned().ok_or("建议不存在或应用已重启，请重新对话".into())}
 fn retain_proposal(p:Proposal)->String{use std::io::Read;let mut b=[0u8;24];if fs::File::open("/dev/urandom").and_then(|mut f|f.read_exact(&mut b)).is_err(){return String::new()}let id=b.iter().map(|b|format!("{b:02x}")).collect::<String>();if let Ok(mut ps)=proposals().lock(){ps.insert(id.clone(),p);}id}
+fn scopes()->&'static std::sync::Mutex<std::collections::HashMap<String,Value>>{static S:std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String,Value>>>=std::sync::OnceLock::new();S.get_or_init(Default::default)}
+pub fn bind_scope(id:&str,scope:Value){scopes().lock().unwrap().insert(id.into(),scope);}
+pub fn scope(id:&str)->Option<Value>{scopes().lock().unwrap().get(id).cloned()}
 pub fn retain_cleanup_review(entries:Vec<Entry>)->String{retain_proposal(Proposal::Cleanup(entries))}
 pub fn validate_restore_proposal(id:&str,current:&[String])->Result<(),String>{
     let Proposal::Restore(expected)=proposal(id)? else{return Err("此建议不是撤回操作".into())};

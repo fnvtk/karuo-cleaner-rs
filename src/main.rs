@@ -123,12 +123,14 @@ fn chat_entries(request:&Value,state:&Arc<Mutex<State>>)->Result<Vec<Entry>,Stri
         let entries:Vec<_>=candidates.into_iter().filter_map(|(p,dev,ino)|engine::make_entry(&p,"file",&root,"当前空间索引；AI只接收匿名统计").filter(|e|e.device==dev&&e.inode==ino)).collect();
         Ok(entries)
     } else {
-        let found:Vec<_>=d.sessions.selected_excluding(module,category,query,&exclusion_ids(request)).into_iter().filter(|e|chosen.is_empty()||chosen.contains(&e.id)).collect();
-        if !chosen.is_empty()&&chosen.iter().any(|id|!found.iter().any(|e|&e.id==id)){return Err("所选项目已不在当前结果或筛选中，请重新选择。".into())}
+        let found:Vec<_>=d.sessions.selected_excluding(module,category,query,&exclusion_ids(request)).into_iter().filter(|e|chosen.is_empty()||chosen.contains(&e.id)||Path::new(&e.path).parent().is_some_and(|p|chosen.contains(&format!("directory:{}",p.display())))).collect();
+        if !chosen.is_empty()&&chosen.iter().any(|id|!found.iter().any(|e|&e.id==id||Path::new(&e.path).parent().is_some_and(|p|*id==format!("directory:{}",p.display())))){return Err("所选项目已不在当前结果或筛选中，请重新选择。".into())}
         Ok(found)
     }
 }
 
+/// 建议始终指向创建时的板块和扫描批次；切页、换目录、重扫不能换用新对象。
+fn validate_ai_scope(request:&Value,state:&Arc<Mutex<State>>)->Result<(),String>{let id=request["proposal_id"].as_str().or_else(||request["plan_id"].as_str()).unwrap_or("");let Some(scope)=analysis::scope(id)else{return Ok(())};let module=scope["module"].as_str().ok_or("建议范围无效")?;if request["module"].as_str().is_some_and(|m|m!=module){return Err("请返回建议原来的板块重新分析".into())}for key in ["category","query"]{if request.get(key).is_some_and(|v|v!=&scope[key]){return Err("筛选范围已变化，请重新分析".into())}}let d=state.lock().map_err(|_|"当前扫描不可用")?;if scope["scan_request_id"].as_u64().unwrap_or(0)!=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0){return Err("扫描批次已变化，此建议已失效".into())}if module=="space"&&scope["path"].as_str()!=d.space_cache.lock().map_err(|_|"空间索引不可用")?.current.to_str(){return Err("目录已变化，请返回原目录或重新分析".into())}Ok(())}
 fn applications() -> Vec<RunningApp> {
     let workspace = NSWorkspace::sharedWorkspace();
     workspace.runningApplications().iter().filter_map(|app| {
@@ -201,6 +203,7 @@ fn scan(request: &Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent
 
 fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEvent>, generation: Arc<AtomicU64>, busy: Arc<AtomicBool>) {
     let command = request["cmd"].as_str().unwrap_or("");
+    if matches!(command,"ai_proposal_plan"|"cleanup_apply"|"uninstall_apply"|"management_apply"|"undo_last"){if let Err(e)=validate_ai_scope(&request,&state){message(&proxy,e,true);return}}
     let task=if matches!(command,"scan"|"space_start"|"smart_clean"|"goal_analyze")||(command=="space_goal_save"&&request["analyze"]==true){match tasks::begin(&request,&proxy){Ok(g)=>Some(g),Err(conflict)=>{emit(&proxy,conflict);return}}}else{None};
     if busy.load(Ordering::SeqCst) && !allowed_while_files_are_processing(command) {
         if ["scan","space_start"].contains(&command){scan_error(&proxy,&request,"正在处理文件；可以继续浏览已有结果，完成后再开始新扫描。")}else{message(&proxy, "正在处理文件，请等待完成后再操作。", true)}return;
@@ -215,13 +218,17 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
         "smart_clean" => smart_flow::start(state,proxy,busy,task),
         "smart_clean_status" => smart_flow::status(&proxy),
         "billing" => emit(&proxy,billing::handle(&request)),
+        "ai_cancel" => {let detail=if request["ai_billing"]=="demo"{billing::settle_ai(request["chat_request_id"].as_str().unwrap_or(""),&Value::Null,false,true)}else{Ok(Value::Null)};emit(&proxy,json!({"event":"ai_cancel","chat_request_id":request["chat_request_id"],"billing":detail.ok()}));},
         "rules_get" => emit(&proxy,json!({"event":"rules","profile":serde_json::from_str::<Value>(include_str!("../Assets/cleanup-rules.json")).unwrap_or(Value::Null),"scan":"只读，不设文件数量或总时长截断；权限失败与主动取消明确保留","cleanup":"后台扫描身份、真实路径、inode/device、大小、修改时间、打开占用重新核验；移入废纸篓可恢复","protected":["系统与Apple应用","运行中应用与本应用","用户保护名单","凭证与钥匙串","数据库与云占位","链接及共享数据"],"uninstall":"准确Bundle ID关联，AI审阅后逐项确认；应用数据与共享目录保留","schedule":"自动清理执行预算保留：50项、128MB；不处理个人文档与应用"})),
-        "session_get" | "scan_page" => {let module=request["module"].as_str().unwrap_or("smart");let mut d=state.lock().unwrap();if module=="space"{let d_running=d.sessions.jobs.get("space").is_some_and(|j|!j.token.load(Ordering::SeqCst));let cache=d.space_cache.clone();let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);drop(d);let view=cache.lock().unwrap().view();emit(&proxy,json!({"event":"session","module":"space","request_id":id,"scanning":d_running,"data":view}));}else{let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);let filter=if command=="scan_page"{Some((request["category"].as_str().unwrap_or("all"),request["query"].as_str().unwrap_or(""),request["page"].as_u64().unwrap_or(0)as usize))}else{None};let page=if request["group_by"]=="directory"&&["junk","large"].contains(&module){d.sessions.directory_page(module,filter)}else{d.sessions.page(module,filter)};emit(&proxy,json!({"event":if command=="scan_page"{"scan_page"}else{"session"},"module":module,"request_id":id,"scanning":page["running"],"data":page}));}},
+        "session_get" | "scan_page" => {let module=request["module"].as_str().unwrap_or("smart");let mut d=state.lock().unwrap();if module=="uninstall"&&request["selection_filter"].is_object(){let filter=&request["selection_filter"];let chosen=if filter["all"]==true{let excluded:Vec<_>=filter["exclude_ids"].as_array().into_iter().flatten().filter_map(|v|v.as_str().map(str::to_owned)).collect();d.sessions.selected_excluding(module,filter["category"].as_str().unwrap_or("all"),filter["query"].as_str().unwrap_or(""),&excluded).into_iter().map(|e|e.id).collect()}else{filter["ids"].as_array().into_iter().flatten().filter_map(|v|v.as_str().map(str::to_owned)).collect()};d.sessions.items.entry(module.into()).or_default().selection_ids=chosen;}if module=="space"{let d_running=d.sessions.jobs.get("space").is_some_and(|j|!j.token.load(Ordering::SeqCst));let cache=d.space_cache.clone();let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);drop(d);let view=cache.lock().unwrap().view();emit(&proxy,json!({"event":"session","module":"space","request_id":id,"scanning":d_running,"data":view}));}else{let id=d.sessions.items.get(module).map(|s|s.request_id).unwrap_or(0);let filter=if command=="scan_page"{Some((request["category"].as_str().unwrap_or("all"),request["query"].as_str().unwrap_or(""),request["page"].as_u64().unwrap_or(0)as usize))}else{None};let page=if request["group_by"]=="directory"&&["junk","large"].contains(&module){d.sessions.directory_page(module,filter)}else{d.sessions.page(module,filter)};emit(&proxy,json!({"event":if command=="scan_page"{"scan_page"}else{"session"},"module":module,"request_id":id,"scanning":page["running"],"data":page}));}},
         "ai_chat" => {
             let module=request["module"].as_str().unwrap_or("smart").to_owned();let request_id=request["chat_request_id"].clone();
             let subpage=request["subpage"].as_str().unwrap_or("running").to_owned();
+            let scope={let d=state.lock().unwrap();json!({"module":module,"scan_request_id":d.sessions.items.get(&module).map(|s|s.request_id).unwrap_or(0),"path":if module=="space"{request["path"].clone()}else{Value::Null},"category":request["category"].as_str().unwrap_or("all"),"query":request["query"].as_str().unwrap_or("")})};
             let management=if module=="optimize" {Some(if subpage=="startup" {startup::list()} else {json!({"apps":applications()})})}else{None};
             thread::spawn(move||{
+                let demo=request["ai_billing"]=="demo";let billing_id=request_id.as_str().unwrap_or("");
+                if demo{match billing::begin_ai(billing_id,request.to_string().len()+management.as_ref().map(|v|v.to_string().len()).unwrap_or(0)+12000){Ok(quote)=>emit(&proxy,json!({"event":"ai_quote","module":module,"subpage":subpage,"chat_request_id":request_id,"quote":quote})),Err(e)=>{emit(&proxy,json!({"event":"ai_chat","module":module,"subpage":subpage,"chat_request_id":request_id,"source":"rules","reply":"本次演示分析未开始。","error":e,"billing_required":e.contains("积分不足")||e.contains("试用"),"proposals":[]}));return}}}
                 let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
                     if let Some(snapshot)=management{return analysis::management_chat(&subpage,&snapshot,&request)}
                     let entries=chat_entries(&request,&state)?;
@@ -229,10 +236,12 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
                     Ok::<Value,String>(analysis::chat(&entries,&module,request["text"].as_str().unwrap_or(""),&request["history"].as_array().cloned().unwrap_or_default(),json!({"scope":"indexed_candidates","count":entries.len(),"restore_ids":restore_ids})))
                 }));
                 let mut reply=match result{Ok(Ok(v))=>v,Ok(Err(e))=>json!({"event":"ai_chat","module":module,"source":"rules","reply":"未完成分析，没有执行清理。","error":e,"proposals":[]}),Err(_)=>json!({"event":"ai_chat","module":module,"source":"rules","reply":"分析遇到异常，请重新提问；没有执行清理。","error":"分析任务已结束","proposals":[]})};
+                if demo{match billing::settle_ai(billing_id,&reply["usage"],reply["source"]=="ai"&&reply["error"].is_null(),false){Ok(detail)=>{if detail["cancelled"]==true{reply["proposals"]=json!([]);reply["error"]=json!("演示分析已取消，未扣分");}reply["billing"]=detail},Err(e)=>{reply["billing_error"]=json!(e)}}emit(&proxy,billing::handle(&json!({"action":"status"})));}
+                if let Some(proposals)=reply["proposals"].as_array_mut(){for p in proposals{if let Some(id)=p["id"].as_str(){analysis::bind_scope(id,scope.clone());}p["module"]=json!(module);}}
                 reply["chat_request_id"]=request_id;if module=="optimize"{reply["subpage"]=json!(subpage)}emit(&proxy,reply);
             });
         },
-        "ai_proposal_plan" => {let proposal_id=request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("").to_owned();let proposal=match analysis::proposal(request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};match proposal{analysis::Proposal::Cleanup(entries)=>{thread::spawn(move||match cleanup::build_entries(entries){Ok(mut v)=>{v["proposal_id"]=json!(proposal_id);emit(&proxy,v)},Err(e)=>message(&proxy,e,true)});},analysis::Proposal::Uninstall(app)=>{match uninstall::build_plan(&app){Ok(v)=>emit(&proxy,v),Err(e)=>message(&proxy,e,true)}},analysis::Proposal::Management(subpage,targets)=>emit(&proxy,json!({"event":"management_proposal","proposal_id":proposal_id,"subpage":subpage,"targets":targets})),analysis::Proposal::Schedule(config)=>emit(&proxy,json!({"event":"ai_schedule_proposal","config":config})),analysis::Proposal::Restore(targets)=>emit(&proxy,json!({"event":"ai_restore_proposal","count":targets.len(),"action":{"cmd":"undo_last","proposal_id":request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")},"executed":false}))}},
+        "ai_proposal_plan" => {let proposal_id=request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("").to_owned();let proposal=match analysis::proposal(request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")){Ok(v)=>v,Err(e)=>{message(&proxy,e,true);return}};match proposal{analysis::Proposal::Cleanup(entries)=>{thread::spawn(move||match cleanup::build_entries(entries){Ok(mut v)=>{if let Some(scope)=analysis::scope(&proposal_id){if let Some(id)=v["plan_id"].as_str(){analysis::bind_scope(id,scope)}}v["proposal_id"]=json!(proposal_id);emit(&proxy,v)},Err(e)=>message(&proxy,e,true)});},analysis::Proposal::Uninstall(app)=>{match uninstall::build_plan(&app){Ok(v)=>{if let Some(scope)=analysis::scope(&proposal_id){if let Some(id)=v["plan_id"].as_str(){analysis::bind_scope(id,scope)}}emit(&proxy,v)},Err(e)=>message(&proxy,e,true)}},analysis::Proposal::Management(subpage,targets)=>emit(&proxy,json!({"event":"management_proposal","proposal_id":proposal_id,"subpage":subpage,"targets":targets})),analysis::Proposal::Schedule(config)=>emit(&proxy,json!({"event":"ai_schedule_proposal","config":config})),analysis::Proposal::Restore(targets)=>emit(&proxy,json!({"event":"ai_restore_proposal","count":targets.len(),"action":{"cmd":"undo_last","proposal_id":request["proposal_id"].as_str().or_else(||request["id"].as_str()).unwrap_or("")},"executed":false}))}},
         "ai_get" => emit(&proxy,analysis::config_status()),
         "ai_save" => {let result=analysis::save_config(request["base_url"].as_str().unwrap_or(""),request["model"].as_str().unwrap_or(""),request["api_key"].as_str().unwrap_or(""));if let Err(e)=result{message(&proxy,e,true)}else{emit(&proxy,analysis::config_status())}},
         "ai_models" => {thread::spawn(move||emit(&proxy,analysis::refresh_models()));},
@@ -472,7 +481,7 @@ fn handle(request: Value, state: Arc<Mutex<State>>, proxy: EventLoopProxy<UiEven
 /// 磁盘写入期间仍保持界面可读、可导航。文件清理/扫描等待；本机设置和启动项调整可继续使用。
 fn allowed_while_files_are_processing(command: &str) -> bool {
     matches!(command,
-        "task_status" | "task_switch" | "billing" | "goal_analyze" | "goal_analysis_status" | "space_goal_get" | "space_goal_save" | "smart_clean_status" | "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
+        "ai_cancel" | "task_status" | "task_switch" | "billing" | "goal_analyze" | "goal_analysis_status" | "space_goal_get" | "space_goal_save" | "smart_clean_status" | "ready" | "cancel" | "session_get" | "scan_page" | "volumes" | "history" |
         "ignore_get" | "schedule_get" | "guardian_get" | "ai_get" | "rules_get" |
         "quit" | "terminate" | "management_apply" | "optimize" | "startup_get" | "login_settings" | "reveal" | "ai_chat" |
         "ai_analyze" | "ai_models" | "uninstall_plan" | "uninstall_analyze" |
@@ -575,13 +584,17 @@ fn main() -> wry::Result<()> {
             },Ok(None)=>{},Err(e)=>{message(&proxy,format!("空间快照未恢复：{e}。原快照已保留，可以重新扫描。"),true)}
         });
     }
+    if let Err(error)=billing::recover_pending(){message(&proxy,error,true)}
     if let Some(error)=session_load_error{message(&proxy,format!("扫描快照未恢复：{error}。原文件已保留。"),true);}
     edit_menu::install();
     let ipc_proxy = proxy.clone();
+    let icon_state=state.clone();
     let webview = WebViewBuilder::new()
-        .with_custom_protocol("karuo".into(), |_id, request| {
-            let (status,bytes):(u16,&'static [u8])=match request.uri().path() {"/space-hero.png" => (200,include_bytes!("../Assets/space-hero.png")), "/smart-hero.png" => (200,include_bytes!("../Assets/smart-hero.png")), "/smart-clean.png" => (200,include_bytes!("../Assets/smart-clean.png")), "/smart-protect.png" => (200,include_bytes!("../Assets/smart-protect.png")), "/smart-files.png" => (200,include_bytes!("../Assets/smart-files.png")), _ => (404,b"")};
-            wry::http::Response::builder().status(status).header("Content-Type","image/png").body(std::borrow::Cow::Borrowed(bytes)).unwrap()
+        .with_custom_protocol("karuo".into(), move |_id, request| {
+            let path=request.uri().path();
+            let image=if let Some(id)=path.strip_prefix("/app-icon/"){let app=icon_state.lock().unwrap().approved.get(id).filter(|e|e.kind=="application").map(|e|e.path.clone());app.and_then(|p|NSWorkspace::sharedWorkspace().iconForFile(&objc2_foundation::NSString::from_str(&p)).TIFFRepresentation()).map(|d|d.to_vec())}else if let Some(pid)=path.strip_prefix("/running-icon/").and_then(|s|s.parse::<i32>().ok()){NSRunningApplication::runningApplicationWithProcessIdentifier(pid).and_then(|app|app.icon()).and_then(|image|image.TIFFRepresentation()).map(|d|d.to_vec())}else{None};
+            let (status,kind,bytes)=if let Some(image)=image{(200,"image/tiff",image)}else{match path {"/space-hero.png"=>(200,"image/png",include_bytes!("../Assets/space-hero.png").to_vec()),"/smart-hero.png"=>(200,"image/png",include_bytes!("../Assets/smart-hero.png").to_vec()),"/smart-clean.png"=>(200,"image/png",include_bytes!("../Assets/smart-clean.png").to_vec()),"/smart-protect.png"=>(200,"image/png",include_bytes!("../Assets/smart-protect.png").to_vec()),"/smart-files.png"=>(200,"image/png",include_bytes!("../Assets/smart-files.png").to_vec()),_=>(404,"image/png",vec![])}};
+            wry::http::Response::builder().status(status).header("Content-Type",kind).body(std::borrow::Cow::Owned(bytes)).unwrap()
         })
         .with_html(include_str!("../ui/index.html"))
         .with_navigation_handler(|url| url == "about:blank" || url.starts_with("about:blank#"))

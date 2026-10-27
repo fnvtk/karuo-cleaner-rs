@@ -259,6 +259,7 @@ pub fn scan_applications(cancel: &AtomicBool, progress: impl Fn(String)) -> Scan
             if !bundle_id.is_empty() {
                 detail.push_str(&format!("；Bundle ID：{bundle_id}"));
             }
+            detail.push_str(if path.join("Contents/_MASReceipt/receipt").is_file(){"；[App Store收据]"}else{"；[其他来源]"});
             if is_running {
                 detail.push_str("；运行中，清理操作应拒绝处理");
             }
