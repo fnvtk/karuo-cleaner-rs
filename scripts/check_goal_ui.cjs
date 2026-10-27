@@ -1,0 +1,21 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const source=fs.readFileSync(require('path').join(__dirname,'../ui/index.html'),'utf8');
+const lines=source.split('\n'),elements=new Map(),buttons=[10,20,30].map(percent=>({dataset:{goal:String(percent)},classList:{toggle(){}}}));
+const posts=[],pages=[];
+const context=vm.createContext({Number,Math,spaceGoal:10,goalAnalysis:{phase:'done',percent:10,safe_bytes:1e9,source:'ai',reply:'安全候选不足，继续检查大文件。'},smartFlow:{phase:'done'},state:{active:'smart',disk:{total:1000e9,available:150e9}},document:{querySelectorAll:()=>buttons},$:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)},post:(cmd,payload)=>posts.push({cmd,...payload}),setModule:page=>pages.push(page)});
+for(const name of ['fmtSize','fmtDiskSize','paintGoal'])vm.runInContext(lines.find(line=>line.trimStart().startsWith(`function ${name}(`)),context);
+vm.runInContext(lines.find(line=>line.includes("$('goal-next-large').onclick=")),context);
+vm.runInContext(lines.find(line=>line.includes("document.querySelectorAll('[data-goal]').forEach(b=>b.onclick=")),context);
+vm.runInContext('paintGoal()',context);
+assert(elements.get('goal-note').textContent.includes('当前可用 150 GB'));
+assert(elements.get('goal-note').textContent.includes('目标已达到'));
+assert(elements.get('goal-next').hidden);
+for(const percent of [10,20,30]){buttons.find(b=>Number(b.dataset.goal)===percent).onclick();assert.equal(posts.at(-1).percent,percent);assert.equal(posts.at(-1).analyze,true);}
+context.goalAnalysis={phase:'done',percent:30,safe_bytes:1e9,source:'ai',reply:'安全候选不足，继续检查大文件。'};
+vm.runInContext('paintGoal()',context);
+assert(elements.get('goal-note').textContent.includes('距目标还差 150 GB'));
+assert(elements.get('goal-note').textContent.includes('可安全整理'));
+assert.equal(elements.get('goal-next').hidden,false);
+elements.get('goal-next-large').onclick();elements.get('goal-next-apps').onclick();
+assert.deepEqual(pages,['large','uninstall']);assert(posts.every(p=>p.cmd==='space_goal_save'));
+console.log('PASS real goal UI: 10/20/30 requests, matching disk units, actual gap, safe candidates and next-step navigation without deletion');
