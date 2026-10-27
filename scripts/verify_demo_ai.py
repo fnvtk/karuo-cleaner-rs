@@ -29,15 +29,18 @@ class Model(http.server.BaseHTTPRequestHandler):
         self.send_response(500 if selected_mode == 'failure' else 200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        result = {'choices': [{'message': {'content': json.dumps({'reply': '请保留重要资料，当前仅生成建议。', 'action': 'none', 'refs': []})}}]}
+        result = {'choices': [{'message': {'content': json.dumps({'reply': '请保留重要资料，当前仅生成建议。', 'action': 'cleanup' if selected_mode=='cleanup' else 'none', 'scope':'recommended', 'refs': []})}}]}
         if selected_mode != 'unknown':
             result['usage'] = {'prompt_tokens': 1000, 'completion_tokens': 500, 'total_tokens': 1500}
         self.wfile.write(json.dumps(result).encode())
 
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-with tempfile.TemporaryDirectory(prefix='cm-ai-', dir='/private/tmp') as raw_root:
+with tempfile.TemporaryDirectory(prefix='cm-ai-', dir=str(Path.home())) as raw_root:
     root = Path(raw_root).resolve()
+    cache=root/'Library/Caches/com.cleanmac.acceptance/cache.bin'
+    cache.parent.mkdir(parents=True);cache.write_bytes(b'disposable cache fixture')
+    os.utime(cache,(time.time()-30*86400,time.time()-30*86400))
     env = dict(os.environ, HOME=str(root))
     log = (root / 'app.log').open('w')
     process = None
@@ -127,6 +130,27 @@ with tempfile.TemporaryDirectory(prefix='cm-ai-', dir='/private/tmp') as raw_roo
         evidence=Path('release-assets/acceptance/goal-requests.json')
         evidence.parent.mkdir(parents=True,exist_ok=True)
         evidence.write_text(json.dumps({'provider':'loopback fixture','real_disk_metrics':True,'goals':goals},ensure_ascii=False,indent=2))
+        api({'cmd':'scan','module':'junk','request_id':731})
+        for _ in range(300):
+            session=api({'cmd':'session_get','module':'junk'})
+            if session.get('data',{}).get('done'):break
+            time.sleep(.02)
+        mode='cleanup'
+        reply=chat('proposal-scope','byok','junk')
+        assert reply['proposals'],reply
+        proposal=reply['proposals'][0]['id']
+        rejected=api({'cmd':'ai_proposal_plan','proposal_id':proposal,'module':'large'},allow_error=True)
+        assert rejected.get('error') and '板块' in rejected['text'],rejected
+        api({'cmd':'scan','module':'junk','request_id':732})
+        for _ in range(300):
+            task=api({'cmd':'task_status'})
+            if task['active'] is None:break
+            time.sleep(.02)
+        rejected=api({'cmd':'ai_proposal_plan','proposal_id':proposal,'module':'junk'},allow_error=True)
+        assert rejected.get('error') and '批次' in rejected['text'],rejected
+        assert cache.read_bytes()==b'disposable cache fixture'
+        assert not api({'cmd':'history'})['records']
+        mode='valid'
         state_file = root / 'Library/Application Support/KaruoCleaner/billing-demo.json'
         data = json.loads(state_file.read_text())
         original_trial=data['trial_start']
