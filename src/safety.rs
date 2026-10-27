@@ -116,6 +116,7 @@ pub fn validate_junk_entry(entry: &Entry) -> Result<(), String> {
 
 #[link(name="proc")]
 unsafe extern "C" {
+    fn proc_pidinfo(pid:libc::c_int,flavor:libc::c_int,arg:u64,buffer:*mut libc::c_void,size:libc::c_int)->libc::c_int;
     fn proc_listpidspath(kind:u32, typeinfo:u32, path:*const libc::c_char, flags:u32, buffer:*mut libc::c_void, size:libc::c_int)->libc::c_int;
 }
 
@@ -123,6 +124,22 @@ unsafe extern "C" {
 /// 使用全部进程且 flags=0（不排除 O_EVTONLY），API错误、缓冲不足和3秒超时失败闭合。
 pub fn ensure_not_open(path: &Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
+    // proc_listpidspath can skip an entire process if another descriptor closes
+    // during its scan. Check our descriptors by inode first, ignoring only EBADF.
+    let target=fs::metadata(path).map_err(|e|format!("无法核验文件占用：{e}"))?;
+    let needed=unsafe{proc_pidinfo(std::process::id() as i32,1,0,std::ptr::null_mut(),0)};
+    if needed<=0{return Err("无法读取本进程文件句柄，已跳过".into())}
+    let mut descriptors=vec![0u64;(needed as usize/8)+64];
+    let bytes=unsafe{proc_pidinfo(std::process::id() as i32,1,0,descriptors.as_mut_ptr().cast(),(descriptors.len()*8) as i32)};
+    if bytes<=0||bytes as usize>=descriptors.len()*8||bytes%8!=0{return Err("本进程文件句柄未完整读取，已跳过".into())}
+    for item in descriptors.iter().take(bytes as usize/8){
+        let fd=(*item as u32) as i32;
+        let mut stat=std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe{libc::fstat(fd,stat.as_mut_ptr())}==0{
+            let stat=unsafe{stat.assume_init()};
+            if stat.st_dev as u64==target.dev()&&stat.st_ino==target.ino(){return Err("文件正在被进程使用，已跳过".into())}
+        }else if std::io::Error::last_os_error().raw_os_error()!=Some(libc::EBADF){return Err("文件句柄核验失败，已跳过".into())}
+    }
     let path=std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_|"文件路径包含无效字符")?;
     let (send,receive)=std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
@@ -178,8 +195,12 @@ mod tests {
         let path=home().unwrap().join(format!(".karuo-open-test-{}-{}",std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         let file=fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
         let start=Instant::now();
-        let error=ensure_not_open(&path).unwrap_err();
-        assert!(error.contains("正在被进程使用"),"应检出本进程句柄，实际：{error}");
+        let churn=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let child=churn.clone();
+        let worker=std::thread::spawn(move||{while child.load(std::sync::atomic::Ordering::Relaxed){drop(fs::File::open("/dev/null").unwrap());}});
+        let results:Vec<_>=(0..32).map(|_|ensure_not_open(&path)).collect();
+        churn.store(false,std::sync::atomic::Ordering::Relaxed);worker.join().unwrap();
+        for result in results{let error=result.unwrap_err();assert!(error.contains("正在被进程使用"),"应检出本进程句柄，实际：{error}");}
         eprintln!("自有打开文件占用检查：{}ms",start.elapsed().as_millis());
         drop(file);
         let start=Instant::now();
