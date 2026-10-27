@@ -1,4 +1,5 @@
 """Verify stopping the real smart-clean pipeline and restoring only its own generated cache fixtures."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -40,21 +41,36 @@ try:
         if (root/'Library/Application Support/KaruoCleaner/control.sock').exists():break
         time.sleep(.05)
     api({'cmd':'ready'})
-    apply({'cmd':'smart_clean'})
+    manual='--manual' in sys.argv
+    pool=ThreadPoolExecutor(max_workers=1)
+    if manual:
+        api({'cmd':'scan','module':'junk','request_id':1})
+        for _ in range(400):
+            if api({'cmd':'task_status'})['active'] is None:break
+            time.sleep(.02)
+        future=pool.submit(apply,{'cmd':'move','module':'junk','selection':{'category':'all','query':''}})
+    else:apply({'cmd':'smart_clean'})
     stopped=False
     for _ in range(400):
-        status=api({'cmd':'smart_clean_status'})
-        if status.get('running') and status.get('phase')=='move' and status.get('moved_bytes',0)>0:
-            api({'cmd':'cancel','module':'smart'});stopped=True;break
+        status=(api({'cmd':'task_status'}).get('active') or {}) if manual else api({'cmd':'smart_clean_status'})
+        if status.get('running') and status.get('phase')=='move' and (status.get('progress',0)>0 if manual else status.get('moved_bytes',0)>0):
+            api({'cmd':'cancel','module':'junk' if manual else 'smart'});stopped=True;break
         if status.get('running') is False:break
         time.sleep(.02)
     assert stopped,('No partial moving boundary observed',status,root)
-    for _ in range(400):
-        status=api({'cmd':'smart_clean_status'})
-        if not status.get('running'):break
-        time.sleep(.02)
+    if manual:
+        result=future.result(timeout=30)
+        terminal=api({'cmd':'task_status'})['last']
+        assert terminal['stop_acknowledged'] and terminal['phase']=='stopped',terminal
+        records=api({'cmd':'history'})['records']
+        status={'phase':'cancelled','moved_count':result['count'],'processed':result['count'],'moved_bytes':result['size']}
+    else:
+        for _ in range(400):
+            status=api({'cmd':'smart_clean_status'})
+            if not status.get('running'):break
+            time.sleep(.02)
+        records=api({'cmd':'history'})['records']
     assert status['phase']=='cancelled',status
-    records=api({'cmd':'history'})['records']
     assert 0<len(records)<len(files),(len(records),status)
     assert len(records)==status['moved_count']==status['processed']
     assert sum(not f.exists() for f in files)==len(records)
@@ -62,8 +78,8 @@ try:
     apply({'cmd':'restore','ids':[r['id'] for r in records]})
     assert all(f.read_bytes()==payload for f in files)
     assert not api({'cmd':'history'})['records']
-    evidence={'scenario':'native-smart-stop-and-restore','fixture_files':len(files),'moved_before_stop':len(records),'unmoved_files_untouched':True,'all_original_bytes_restored':True,'phase':status['phase'],'processed':status['processed'],'moved_bytes':status['moved_bytes'],'user_files_touched':False}
-    out=Path('release-assets/acceptance/smart-stop.json');out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(evidence,ensure_ascii=False,indent=2))
+    evidence={'scenario':'native-manual-stop-and-restore' if manual else 'native-smart-stop-and-restore','fixture_files':len(files),'moved_before_stop':len(records),'unmoved_files_untouched':True,'all_original_bytes_restored':True,'phase':status['phase'],'processed':status['processed'],'moved_bytes':status['moved_bytes'],'user_files_touched':False}
+    out=Path('release-assets/acceptance/manual-stop.json' if manual else 'release-assets/acceptance/smart-stop.json');out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(evidence,ensure_ascii=False,indent=2))
     print('PASS',json.dumps(evidence,ensure_ascii=False),flush=True)
     success=True
 finally:
