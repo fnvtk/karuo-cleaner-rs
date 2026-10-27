@@ -552,8 +552,13 @@ fn main() -> wry::Result<()> {
         std::process::exit(selftest::run());
     }
     let event_loop = EventLoopBuilder::<UiEvent>::with_user_event().build();
+    // A debug-only launch size lets native acceptance inspect the supported minimum.
+    #[cfg(debug_assertions)]
+    let initial_size=if args.iter().any(|a|a=="--layout-check-min"){LogicalSize::new(960.0,600.0)}else{LogicalSize::new(1180.0,760.0)};
+    #[cfg(not(debug_assertions))]
+    let initial_size=LogicalSize::new(1180.0,760.0);
     let window = WindowBuilder::new().with_title("轻理AI · CleanMac AI")
-        .with_inner_size(LogicalSize::new(1180.0, 760.0))
+        .with_inner_size(initial_size)
         .with_min_inner_size(LogicalSize::new(960.0, 600.0)).build(&event_loop).expect("无法创建窗口");
     let mut allowed = vec![home().join(".npm/_npx"),home().join(".npm/_cacache"),home().join(".cargo/registry/cache"),home().join("Library/Caches"), home().join("Library/Logs"), PathBuf::from("/Applications"), home().join("Applications")];
     if let Ok(bytes) = fs::read(saved_roots()) {

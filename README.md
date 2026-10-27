@@ -4,9 +4,9 @@
 
 点一下「整理空间」，轻理AI在首页完成扫描、安全审核和整理。看着进度前进，结束后直接看到整理体积、耗时和空间变化。重要资料保留，整理还能撤回。
 
-[下载已发布版 1.8.1 · Mac 版](https://github.com/fnvtk/karuo-cleaner-rs/releases/download/v1.8.1/CleanMacAI-1.8.1-macos.zip)
+[下载轻理AI 1.9.0 · Mac 版](https://github.com/fnvtk/karuo-cleaner-rs/releases/latest/download/CleanMacAI-1.9.0-macos.zip)
 
-当前开发候选版为 **1.9.0**，尚未完成全部验收与发布。打开「清理管家」可以查看正在使用的版本。
+打开「清理管家」可以查看正在使用的版本。
 
 先找出占空间的内容，再让 AI 帮你看清该留什么。
 
