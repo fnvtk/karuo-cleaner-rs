@@ -42,12 +42,12 @@ with tempfile.TemporaryDirectory(prefix='cm-ai-', dir='/private/tmp') as raw_roo
     log = (root / 'app.log').open('w')
     process = None
 
-    def api(request):
+    def api(request, allow_error=False):
         r = subprocess.run([exe, '--api', '-'], input=json.dumps(request), env=env, capture_output=True, text=True, timeout=20)
         if r.returncode:
             raise AssertionError(r.stderr)
         value = json.loads(r.stdout)
-        if value.get('error') and value.get('event') != 'ai_chat':
+        if value.get('error') and value.get('event') != 'ai_chat' and not allow_error:
             raise AssertionError(value)
         return value
 
@@ -129,6 +129,19 @@ with tempfile.TemporaryDirectory(prefix='cm-ai-', dir='/private/tmp') as raw_roo
         evidence.write_text(json.dumps({'provider':'loopback fixture','real_disk_metrics':True,'goals':goals},ensure_ascii=False,indent=2))
         state_file = root / 'Library/Application Support/KaruoCleaner/billing-demo.json'
         data = json.loads(state_file.read_text())
+        original_trial=data['trial_start']
+        data['trial_start']=int(time.time())-6*86400-10
+        data['reminded']=False
+        state_file.write_text(json.dumps(data))
+        assert wallet()['reminder'] is True and wallet()['reminder'] is False
+        data=json.loads(state_file.read_text())
+        data['trial_start']=int(time.time())-7*86400-10
+        state_file.write_text(json.dumps(data))
+        n=len(requests)
+        assert wallet()['full'] is False and chat('expired')['billing_required'] and len(requests)==n
+        assert api({'cmd':'ready'})['event']=='ready'
+        assert chat('expired-byok','byok')['source']=='ai'
+        data=json.loads(state_file.read_text());data['trial_start']=original_trial
         data['milli_credits'] = 0
         state_file.write_text(json.dumps(data))
         n = len(requests)
@@ -147,6 +160,13 @@ with tempfile.TemporaryDirectory(prefix='cm-ai-', dir='/private/tmp') as raw_roo
         assert restored['plan'] == 'lifetime' and restored['credits'] == 3100
         n = len(requests)
         assert chat('charged').get('error') and len(requests) == n and wallet()['credits'] == 3100
+        for yuan in (10,100,3):
+            before=wallet()['credits']
+            api({'cmd':'billing','action':'topup','yuan':yuan,'request_id':f'topup-{yuan}'})
+            assert wallet()['credits']==before+yuan*100
+        denied=api({'cmd':'billing','action':'topup','yuan':0,'request_id':'bad-topup'},allow_error=True)
+        assert denied.get('error') and wallet()['credits']==14400
+        print('PASS trial expiry, one-time reminder, BYOK after expiry and all recharge amounts')
         print('PASS native API: BYOK separation, trial, actual usage, duplicate/restart, failure, unknown usage, cancellation, insufficient balance, topup, annual, lifetime, restore, module-scoped management')
     finally:
         if process is not None and process.poll() is None:
