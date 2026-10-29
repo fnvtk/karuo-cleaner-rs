@@ -15,10 +15,10 @@ const OUTPUT_RATE:i64=3;
 static LOCK:Mutex<()>=Mutex::new(());
 #[derive(Default,Serialize,Deserialize)]
 #[serde(default)]
-struct Wallet { demo:bool, trial_start:Option<u64>, plan:Option<String>, purchased_at:Option<u64>, milli_credits:i64, reminded:bool, receipts:BTreeSet<String>, records:Vec<Value>, pending:BTreeMap<String,i64> }
+struct Wallet { module_disabled:bool, demo:bool, trial_start:Option<u64>, plan:Option<String>, purchased_at:Option<u64>, milli_credits:i64, reminded:bool, receipts:BTreeSet<String>, records:Vec<Value>, pending:BTreeMap<String,i64> }
 impl Wallet {
  fn full(&self,now:u64)->bool {self.plan.as_deref()==Some("lifetime")||(self.plan.as_deref()==Some("annual")&&self.purchased_at.is_some_and(|t|now<t+365*DAY))||self.trial_start.is_some_and(|t|now<t+TRIAL_DAYS*DAY)}
- fn view(&self,now:u64)->Value {let remaining=self.trial_start.map(|t|(t+TRIAL_DAYS*DAY).saturating_sub(now)).unwrap_or(0);json!({"event":"billing","demo":self.demo,"full":self.full(now),"plan":self.plan,"trial_started":self.trial_start.is_some(),"trial_days_left":remaining.div_ceil(DAY),"credits":self.milli_credits as f64/1000.0,"available_credits":(self.milli_credits-self.pending.values().sum::<i64>()) as f64/1000.0,"records":self.records,"prices":{"annual":YEAR_PRICE,"lifetime":LIFETIME_PRICE,"credits_per_yuan":CREDITS_PER_YUAN/1000},"notice":"演示模式，不会真实扣款。自填 API 费用由接口提供方收取。"})}
+ fn view(&self,now:u64)->Value {let remaining=self.trial_start.map(|t|(t+TRIAL_DAYS*DAY).saturating_sub(now)).unwrap_or(0);json!({"event":"billing","module_disabled":self.module_disabled,"trial_expires_at":self.trial_start.map(|t|t+TRIAL_DAYS*DAY),"subscription_expires_at":if self.plan.as_deref()==Some("annual"){self.purchased_at.map(|t|t+365*DAY)}else{None},"demo":self.demo,"full":self.full(now),"plan":self.plan,"trial_started":self.trial_start.is_some(),"trial_days_left":remaining.div_ceil(DAY),"credits":self.milli_credits as f64/1000.0,"available_credits":(self.milli_credits-self.pending.values().sum::<i64>()) as f64/1000.0,"records":self.records,"prices":{"annual":YEAR_PRICE,"lifetime":LIFETIME_PRICE,"credits_per_yuan":CREDITS_PER_YUAN/1000},"notice":"演示模式，不会真实扣款。自填 API 费用由接口提供方收取。"})}
  fn begin(&mut self,id:&str,estimate:i64,now:u64)->Result<(),String>{
   if id.is_empty()||id.len()>160||estimate<=0{return Err("AI请求编号或预算无效".into())}
   if !self.demo{return Err("请先在套餐页面开启演示模式，或选择自填API".into())}
@@ -39,6 +39,9 @@ impl Wallet {
  fn apply(&mut self,r:&Value,now:u64)->Result<(),String>{
   let action=r["action"].as_str().unwrap_or("status");
   if action=="status"||action=="restore" {return Ok(())}
+  // 自有应用的模块开关，保留账本与原到期时间，不重置试用。
+  if action=="module" {self.module_disabled=r["disabled"].as_bool().ok_or("请选择模块状态")?;if self.module_disabled{self.demo=false;}return Ok(())}
+  if self.module_disabled{return Err("试用／购买模块已关闭，可在设置中恢复".into())}
   if action=="mode" {self.demo=r["enabled"].as_bool().ok_or("请选择演示模式状态")?;return Ok(())}
   let id=r["request_id"].as_str().filter(|s|!s.is_empty()&&s.len()<=160).ok_or("缺少演示操作编号")?;
   if self.receipts.contains(id){return Ok(())}
@@ -60,6 +63,7 @@ pub fn settle_ai(id:&str,usage:&Value,valid:bool,cancelled:bool)->Result<Value,S
 pub fn recover_pending()->Result<(),String>{let _guard=LOCK.lock().map_err(|_|"演示钱包暂不可用")?;let path=crate::home().join("Library/Application Support/KaruoCleaner/billing-demo.json");let mut w=load(&path)?;let ids:Vec<_>=w.pending.keys().cloned().collect();if ids.is_empty(){return Ok(())}for id in ids{w.settle(&id,&Value::Null,false,true,now())?;}crate::schedule::atomic_json(&path,&w)}
 #[cfg(test)]mod tests{
  use super::*;
+ #[test]fn module_toggle_preserves_trial_and_survives_reload(){let mut w=Wallet::default();w.apply(&json!({"action":"trial","request_id":"t"}),100).unwrap();w.demo=true;w.apply(&json!({"action":"module","disabled":true}),200).unwrap();let mut w:Wallet=serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();assert!(w.module_disabled);assert!(!w.demo);assert!(w.begin("ai",1,200).is_err());assert!(w.apply(&json!({"action":"mode","enabled":true}),200).is_err());assert_eq!(w.view(200)["trial_expires_at"],100+7*DAY);w.apply(&json!({"action":"module","disabled":false}),300).unwrap();assert_eq!(w.trial_start,Some(100));assert_eq!(w.milli_credits,TRIAL_CREDITS);assert!(w.apply(&json!({"action":"trial","request_id":"again"}),300).is_err());}
  #[test]fn trial_expires_and_cannot_repeat(){let mut w=Wallet::default();w.apply(&json!({"action":"trial","request_id":"t"}),100).unwrap();assert!(w.full(100+6*DAY));assert!(!w.full(100+7*DAY));assert_eq!(w.milli_credits,TRIAL_CREDITS);assert!(w.apply(&json!({"action":"trial","request_id":"t2"}),200).is_err());}
  #[test]fn purchases_and_topups_are_idempotent_after_reload(){let mut w=Wallet::default();let r=json!({"action":"purchase","plan":"annual","request_id":"p"});w.apply(&r,100).unwrap();let mut w:Wallet=serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();w.apply(&r,200).unwrap();assert_eq!(w.milli_credits,YEAR_CREDITS);assert!(!w.full(100+365*DAY));w.apply(&json!({"action":"topup","yuan":10,"request_id":"c"}),300).unwrap();assert_eq!(w.milli_credits,2_000_000);assert!(w.apply(&json!({"action":"topup","yuan":0,"request_id":"bad"}),300).is_err());}
  #[test]fn normal_mode_is_default_and_wallet_is_only_demo(){let w=Wallet::default();assert!(!w.demo);assert_eq!(w.view(0)["credits"],0.0);}
